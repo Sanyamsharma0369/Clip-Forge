@@ -1,0 +1,1943 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ClipForge Control Room</title>
+  <style>
+    :root {
+      --bg: #efe5d1;
+      --ink: #211a17;
+      --muted: #6f6458;
+      --panel: rgba(255, 251, 244, 0.8);
+      --panel-strong: rgba(255, 249, 240, 0.94);
+      --line: rgba(52, 35, 21, 0.12);
+      --accent: #bf4f2f;
+      --accent-2: #0f6f74;
+      --accent-3: #cda55a;
+      --success: #1b7f4f;
+      --warning: #9c6719;
+      --danger: #a2342d;
+      --shadow: 0 28px 90px rgba(58, 36, 21, 0.15);
+      --radius: 26px;
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+
+    body {
+      margin: 0;
+      font-family: "Trebuchet MS", "Lucida Sans Unicode", sans-serif;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at top left, rgba(191, 79, 47, 0.18), transparent 28%),
+        radial-gradient(circle at 85% 8%, rgba(15, 111, 116, 0.18), transparent 22%),
+        radial-gradient(circle at bottom right, rgba(205, 165, 90, 0.22), transparent 24%),
+        linear-gradient(135deg, #ead7bb, #f7f2e9 50%, #eef3eb);
+      min-height: 100vh;
+    }
+
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      background-image:
+        linear-gradient(rgba(255,255,255,0.08) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255,255,255,0.08) 1px, transparent 1px);
+      background-size: 32px 32px;
+      mask-image: linear-gradient(to bottom, rgba(0,0,0,0.35), transparent 68%);
+    }
+
+    .shell {
+      width: min(1380px, calc(100% - 28px));
+      margin: 22px auto 40px;
+      display: grid;
+      gap: 18px;
+    }
+
+    .hero,
+    .panel {
+      position: relative;
+      overflow: hidden;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(18px);
+    }
+
+    .hero {
+      padding: 28px;
+      display: grid;
+      gap: 18px;
+    }
+
+    .hero::after,
+    .panel::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      background: linear-gradient(135deg, rgba(255,255,255,0.18), transparent 36%, transparent);
+    }
+
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      width: fit-content;
+      padding: 8px 14px;
+      border-radius: 999px;
+      border: 1px solid rgba(191, 79, 47, 0.18);
+      background: rgba(255,255,255,0.4);
+      font-size: 0.82rem;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+
+    h1, h2, h3 {
+      margin: 0;
+      font-family: Georgia, "Palatino Linotype", serif;
+      letter-spacing: -0.03em;
+    }
+
+    h1 {
+      font-size: clamp(2.6rem, 5vw, 5.2rem);
+      line-height: 0.94;
+      max-width: 10ch;
+    }
+
+    .hero-copy {
+      display: grid;
+      grid-template-columns: 1.4fr 1fr;
+      gap: 24px;
+      align-items: end;
+    }
+
+    .hero p {
+      margin: 0;
+      font-size: 1.04rem;
+      line-height: 1.7;
+      color: var(--muted);
+      max-width: 66ch;
+    }
+
+    .hero-actions,
+    .button-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+
+    .metrics {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 14px;
+    }
+
+    .metric,
+    .mini-card,
+    .setup-item,
+    .history-item,
+    .clip-card {
+      background: var(--panel-strong);
+      border: 1px solid rgba(52, 35, 21, 0.08);
+      border-radius: 22px;
+    }
+
+    .metric {
+      padding: 16px;
+      min-height: 118px;
+    }
+
+    .mini-card {
+      padding: 16px;
+      min-height: 118px;
+    }
+
+    .metric label,
+    .panel-label {
+      display: block;
+      font-size: 0.78rem;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin-bottom: 12px;
+    }
+
+    .metric strong {
+      display: block;
+      font-size: 1.35rem;
+      line-height: 1.1;
+    }
+
+    .metric span {
+      display: block;
+      margin-top: 10px;
+      color: var(--muted);
+      line-height: 1.5;
+      font-size: 0.93rem;
+    }
+
+    .layout {
+      display: grid;
+      grid-template-columns: minmax(360px, 420px) minmax(0, 1fr);
+      gap: 18px;
+      align-items: start;
+    }
+
+    .stack {
+      display: grid;
+      gap: 18px;
+    }
+
+    .panel { padding: 22px; }
+
+    .panel-head,
+    .results-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: start;
+      gap: 12px;
+      margin-bottom: 18px;
+    }
+
+    .panel-head p {
+      margin: 8px 0 0;
+      color: var(--muted);
+      line-height: 1.6;
+      font-size: 0.95rem;
+    }
+
+    .status-pill,
+    .meta-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 12px;
+      border-radius: 999px;
+      white-space: nowrap;
+      font-size: 0.88rem;
+    }
+
+    .status-pill {
+      background: rgba(255,255,255,0.56);
+      border: 1px solid rgba(52, 35, 21, 0.09);
+    }
+
+    .dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: var(--accent-2);
+      box-shadow: 0 0 0 5px rgba(15, 111, 116, 0.12);
+    }
+
+    .dot.ok { background: var(--success); box-shadow: 0 0 0 5px rgba(27, 127, 79, 0.12); }
+    .dot.warn { background: var(--warning); box-shadow: 0 0 0 5px rgba(156, 103, 25, 0.12); }
+    .dot.bad { background: var(--danger); box-shadow: 0 0 0 5px rgba(162, 52, 45, 0.12); }
+
+    .form-grid,
+    .setup-list,
+    .history-list { display: grid; gap: 14px; }
+
+    .split {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .triple,
+    .mini-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .stage-card {
+      grid-column: 1 / -1;
+      display: grid;
+      gap: 14px;
+    }
+
+    .stage-card-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: baseline;
+    }
+
+    .stage-card-head strong {
+      font-size: 1.2rem;
+      line-height: 1.1;
+    }
+
+    .stage-card-head span {
+      color: var(--muted);
+      font-size: 0.92rem;
+      text-align: right;
+    }
+
+    .stage-stepper {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .stage-step {
+      display: grid;
+      gap: 6px;
+      padding: 10px 12px;
+      border-radius: 16px;
+      border: 1px solid rgba(52, 35, 21, 0.08);
+      background: rgba(255, 255, 255, 0.55);
+      opacity: 0.38;
+      transition: opacity 0.18s ease, transform 0.18s ease, background 0.18s ease, color 0.18s ease;
+    }
+
+    .stage-step strong {
+      font-size: 0.95rem;
+      line-height: 1.1;
+    }
+
+    .stage-meta {
+      font-size: 0.8rem;
+      line-height: 1.35;
+      color: var(--muted);
+      min-height: 1.1em;
+    }
+
+    .stage-step.active {
+      opacity: 1;
+      color: #fff;
+      background: linear-gradient(135deg, #1f2437, #193c52);
+      transform: translateY(-1px);
+      box-shadow: 0 10px 22px rgba(25, 60, 82, 0.18);
+    }
+
+    .stage-step.active .stage-meta {
+      color: rgba(255, 255, 255, 0.78);
+    }
+
+    .stage-step.done {
+      opacity: 0.72;
+      background: rgba(27, 127, 79, 0.1);
+      text-decoration: line-through;
+    }
+
+    .stage-step.error {
+      opacity: 1;
+      background: rgba(162, 52, 45, 0.12);
+      color: var(--danger);
+    }
+
+    label {
+      display: grid;
+      gap: 7px;
+      font-size: 0.85rem;
+      color: var(--muted);
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }
+
+    input,
+    select,
+    button,
+    textarea {
+      font: inherit;
+    }
+
+    input,
+    select,
+    textarea {
+      width: 100%;
+      padding: 14px 16px;
+      border-radius: 16px;
+      border: 1px solid rgba(52, 35, 21, 0.12);
+      background: rgba(255, 255, 255, 0.74);
+      color: var(--ink);
+    }
+
+    input:focus,
+    select:focus,
+    textarea:focus {
+      outline: none;
+      border-color: rgba(191, 79, 47, 0.5);
+      background: rgba(255,255,255,0.92);
+      transform: translateY(-1px);
+    }
+
+    button {
+      border: 0;
+      border-radius: 999px;
+      padding: 13px 18px;
+      cursor: pointer;
+      transition: transform 0.18s ease, opacity 0.18s ease, box-shadow 0.18s ease;
+    }
+
+    button:hover { transform: translateY(-1px); }
+    button:disabled { cursor: not-allowed; opacity: 0.55; transform: none; }
+
+    .primary {
+      background: linear-gradient(135deg, #c24f2d, #e08942);
+      color: #fff9f1;
+      box-shadow: 0 12px 28px rgba(191, 79, 47, 0.25);
+    }
+
+    .secondary {
+      background: rgba(15, 111, 116, 0.1);
+      color: var(--accent-2);
+      border: 1px solid rgba(15, 111, 116, 0.16);
+    }
+
+    .ghost,
+    .preset {
+      background: rgba(255,255,255,0.55);
+      color: var(--ink);
+      border: 1px solid rgba(52, 35, 21, 0.1);
+    }
+
+    .preset-row,
+    .meta-line {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .setup-item,
+    .history-item {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      padding: 13px 14px;
+    }
+
+    .workspace-path,
+    .command-box,
+    .log-box {
+      font-family: Consolas, "Courier New", monospace;
+      background: #17130f;
+      color: #f6f1e8;
+      border-radius: 20px;
+      padding: 16px;
+      border: 1px solid rgba(255,255,255,0.08);
+    }
+
+    .workspace-path,
+    .command-box {
+      font-size: 0.92rem;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .log-box {
+      min-height: 300px;
+      max-height: 430px;
+      overflow: auto;
+      line-height: 1.55;
+      font-size: 0.88rem;
+    }
+
+    .log-box.empty {
+      display: grid;
+      place-items: center;
+      color: rgba(246, 241, 232, 0.7);
+    }
+
+    .mini-card { padding: 14px; }
+    .mini-card strong {
+      display: block;
+      font-size: 1.12rem;
+      margin-bottom: 6px;
+    }
+
+    .mini-card span,
+    .setup-item code,
+    .history-item span,
+    .empty-state,
+    .clip-card p {
+      color: var(--muted);
+      font-size: 0.92rem;
+    }
+
+    .clip-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+      gap: 16px;
+    }
+
+    .clip-card {
+      display: grid;
+      gap: 14px;
+      padding: 16px;
+      transform: translateY(8px);
+      opacity: 0;
+      animation: rise 0.45s ease forwards;
+    }
+
+    .clip-video-wrap {
+      position: relative;
+      aspect-ratio: 9 / 16;
+      max-height: 320px;
+      background: #000;
+      border-radius: 20px;
+      overflow: hidden;
+      cursor: pointer;
+    }
+
+    .clip-card video,
+    .clip-video {
+      width: 100%;
+      height: 100%;
+      display: block;
+      object-fit: cover;
+      background: #1a1510;
+      transition: opacity 0.2s ease;
+    }
+
+    .play-overlay {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: rgba(0, 0, 0, 0.34);
+      pointer-events: none;
+      transition: opacity 0.2s ease;
+    }
+
+    .clip-video-wrap.playing .play-overlay {
+      opacity: 0;
+    }
+
+    .play-btn-big {
+      width: 64px;
+      height: 64px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: rgba(191, 79, 47, 0.88);
+      box-shadow: 0 14px 30px rgba(0, 0, 0, 0.24);
+      transform: scale(1);
+      transition: transform 0.16s ease;
+    }
+
+    .clip-video-wrap:hover .play-btn-big {
+      transform: scale(1.08);
+    }
+
+    .clip-duration {
+      position: absolute;
+      right: 10px;
+      bottom: 10px;
+      padding: 5px 8px;
+      border-radius: 999px;
+      background: rgba(0, 0, 0, 0.72);
+      color: #fff;
+      font-family: Consolas, "Courier New", monospace;
+      font-size: 0.76rem;
+      pointer-events: none;
+    }
+
+    .mute-btn {
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      width: 38px;
+      height: 38px;
+      padding: 0;
+      display: grid;
+      place-items: center;
+      border-radius: 12px;
+      background: rgba(0, 0, 0, 0.58);
+      color: #fff;
+      opacity: 0;
+      transition: opacity 0.15s ease, transform 0.15s ease;
+    }
+
+    .clip-video-wrap:hover .mute-btn,
+    .clip-video-wrap:focus-within .mute-btn {
+      opacity: 1;
+    }
+
+    .mute-btn:hover {
+      transform: translateY(-1px);
+    }
+
+    .clip-info {
+      display: grid;
+      gap: 10px;
+    }
+
+    .clip-hook {
+      margin: 0;
+      color: var(--muted);
+      font-size: 0.92rem;
+      line-height: 1.55;
+    }
+
+    .enhance-panel {
+      margin-top: 10px;
+      padding: 12px;
+      background: rgba(255,255,255,0.52);
+      border: 1px solid rgba(52, 35, 21, 0.08);
+      border-radius: 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .toggle-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      font-size: 13px;
+    }
+
+    .toggle-label {
+      color: var(--muted);
+      font-weight: 500;
+    }
+
+    .toggle-label span {
+      color: var(--ink);
+      font-weight: 700;
+    }
+
+    .toggle-switch {
+      position: relative;
+      width: 42px;
+      height: 24px;
+      flex-shrink: 0;
+    }
+
+    .toggle-switch input {
+      opacity: 0;
+      width: 0;
+      height: 0;
+    }
+
+    .toggle-track {
+      position: absolute;
+      inset: 0;
+      background: rgba(52, 35, 21, 0.08);
+      border-radius: 999px;
+      border: 1px solid rgba(52, 35, 21, 0.1);
+      cursor: pointer;
+      transition: background 0.2s ease;
+    }
+
+    .toggle-track::after {
+      content: "";
+      position: absolute;
+      top: 3px;
+      left: 3px;
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      background: var(--muted);
+      transition: transform 0.2s ease, background 0.2s ease;
+    }
+
+    .toggle-switch input:checked + .toggle-track {
+      background: rgba(191, 79, 47, 0.16);
+      border-color: rgba(191, 79, 47, 0.45);
+    }
+
+    .toggle-switch input:checked + .toggle-track::after {
+      transform: translateX(18px);
+      background: var(--accent);
+    }
+
+    .ai-badge {
+      display: none;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      color: var(--accent);
+      background: rgba(191, 79, 47, 0.1);
+      border: 1px solid rgba(191, 79, 47, 0.3);
+      border-radius: 10px;
+      padding: 8px 10px;
+      line-height: 1.45;
+    }
+
+    .ai-badge.visible {
+      display: flex;
+    }
+
+    .scale-row {
+      display: none;
+      align-items: center;
+      gap: 10px;
+      font-size: 13px;
+      color: var(--muted);
+      flex-wrap: wrap;
+    }
+
+    .scale-row.visible {
+      display: flex;
+    }
+
+    .scale-btn {
+      padding: 6px 12px;
+      border-radius: 10px;
+      border: 1px solid rgba(52, 35, 21, 0.1);
+      background: rgba(255,255,255,0.6);
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+
+    .scale-btn.active {
+      border-color: rgba(191, 79, 47, 0.4);
+      background: rgba(191, 79, 47, 0.1);
+      color: var(--accent);
+    }
+
+    .btn-enhance,
+    .btn-dl-enhanced {
+      width: 100%;
+      padding: 10px;
+      border-radius: 12px;
+      font-size: 13px;
+      font-weight: 800;
+      text-align: center;
+      text-decoration: none;
+    }
+
+    .btn-enhance {
+      border: none;
+      background: linear-gradient(135deg, #7c6af5, #a855f7);
+      color: #fff;
+      cursor: pointer;
+    }
+
+    .btn-enhance:hover {
+      opacity: 0.92;
+      transform: translateY(-1px);
+    }
+
+    .btn-enhance:disabled {
+      opacity: 0.45;
+      pointer-events: none;
+    }
+
+    .enhance-progress {
+      display: none;
+      flex-direction: column;
+      gap: 5px;
+    }
+
+    .enhance-progress.visible {
+      display: flex;
+    }
+
+    .enhance-progress-bar-wrap {
+      height: 4px;
+      background: rgba(52, 35, 21, 0.08);
+      border-radius: 999px;
+      overflow: hidden;
+    }
+
+    .enhance-progress-bar {
+      height: 100%;
+      width: 0%;
+      background: linear-gradient(90deg, var(--accent), #a855f7);
+      border-radius: 999px;
+      transition: width 0.4s ease;
+    }
+
+    .enhance-status-msg {
+      font-size: 11px;
+      color: var(--muted);
+      font-family: Consolas, "Courier New", monospace;
+    }
+
+    .btn-dl-enhanced {
+      display: none;
+      background: rgba(27, 127, 79, 0.12);
+      border: 1px solid rgba(27, 127, 79, 0.4);
+      color: var(--success);
+    }
+
+    .btn-dl-enhanced.visible {
+      display: block;
+    }
+
+    .clip-card h3 {
+      font-size: 1.25rem;
+      line-height: 1.08;
+    }
+
+    .empty-state {
+      padding: 26px;
+      border-radius: 22px;
+      border: 1px dashed rgba(52, 35, 21, 0.18);
+      text-align: center;
+      background: rgba(255,255,255,0.38);
+    }
+
+    .diag-list {
+      display: grid;
+      gap: 0;
+    }
+
+    .diag-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 9px 0;
+      border-bottom: 1px solid rgba(52, 35, 21, 0.08);
+      font-size: 13px;
+    }
+
+    .diag-row:last-child {
+      border-bottom: none;
+    }
+
+    .diag-label {
+      color: var(--muted);
+      flex: 1;
+    }
+
+    .diag-value.good {
+      color: var(--success);
+      font-weight: 700;
+    }
+
+    .diag-value.bad {
+      color: var(--danger);
+      font-weight: 700;
+    }
+
+    .diag-warning {
+      margin-top: 12px;
+      padding: 12px;
+      background: rgba(156, 103, 25, 0.09);
+      border: 1px solid rgba(156, 103, 25, 0.32);
+      border-radius: 12px;
+      font-size: 12px;
+      line-height: 1.6;
+      color: var(--warning);
+    }
+
+    .diag-warning code {
+      display: inline-block;
+      margin-top: 6px;
+      padding: 2px 6px;
+      border-radius: 6px;
+      background: rgba(255,255,255,0.6);
+      color: var(--ink);
+      font-family: Consolas, "Courier New", monospace;
+    }
+
+    .toast {
+      position: fixed;
+      right: 20px;
+      bottom: 20px;
+      z-index: 50;
+      max-width: 360px;
+      padding: 14px 16px;
+      border-radius: 18px;
+      background: rgba(24, 20, 17, 0.92);
+      color: #f7f1e8;
+      box-shadow: 0 22px 50px rgba(0,0,0,0.24);
+      opacity: 0;
+      transform: translateY(12px);
+      pointer-events: none;
+      transition: opacity 0.2s ease, transform 0.2s ease;
+    }
+
+    .toast.show {
+      opacity: 1;
+      transform: translateY(0);
+    }
+
+    @keyframes rise {
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    @media (max-width: 980px) {
+      .hero-copy,
+      .layout,
+      .metrics,
+      .mini-grid { grid-template-columns: 1fr; }
+
+      .stage-stepper { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+
+    @media (max-width: 720px) {
+      .shell {
+        width: min(100% - 18px, 1380px);
+        margin: 14px auto 28px;
+      }
+
+      .hero, .panel { padding: 18px; border-radius: 22px; }
+      .split, .triple { grid-template-columns: 1fr; }
+      .hero-actions, .button-row { flex-direction: column; }
+      .stage-card-head { display: grid; }
+      .stage-card-head span { text-align: left; }
+      .stage-stepper { grid-template-columns: 1fr; }
+      button { width: 100%; }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <section class="hero">
+      <div class="eyebrow">ClipForge Control Room</div>
+      <div class="hero-copy">
+        <div>
+          <h1>Run the whole clipping workflow from one tab.</h1>
+          <p>
+            Paste a video, launch the pipeline, monitor live logs, and review finished shorts without bouncing
+            between terminals, folders, and notes. This page is powered by the local ClipForge server, so every
+            action stays on your machine.
+          </p>
+        </div>
+        <div class="button-row">
+          <button class="primary" id="runTopButton" type="button">Launch ClipForge Run</button>
+          <button class="secondary" id="startOllamaTop" type="button">Start Ollama</button>
+          <button class="ghost" id="openOutputsTop" type="button">Open Outputs Folder</button>
+        </div>
+      </div>
+      <div class="metrics">
+        <div class="metric">
+          <label>System</label>
+          <strong id="systemHealth">Checking</strong>
+          <span id="systemCopy">Loading local setup health.</span>
+        </div>
+        <div class="metric">
+          <label>Current Run</label>
+          <strong id="currentStage">Idle</strong>
+          <span id="currentRunCopy">No active run yet.</span>
+        </div>
+        <div class="metric">
+          <label>Available Models</label>
+          <strong id="modelCount">0</strong>
+          <span id="modelList">Waiting for Ollama scan.</span>
+        </div>
+        <div class="metric">
+          <label>Clip Library</label>
+          <strong id="clipCount">0</strong>
+          <span id="clipCopy">No clips rendered yet.</span>
+        </div>
+      </div>
+    </section>
+
+    <section class="layout">
+      <div class="stack">
+        <article class="panel">
+          <div class="panel-head">
+            <div>
+              <div class="panel-label">Run Builder</div>
+              <h2>Queue the next video</h2>
+              <p>Use presets for different content styles, then launch the job directly from the page.</p>
+            </div>
+            <div class="status-pill"><span id="jobDot" class="dot"></span><span id="jobPillText">Idle</span></div>
+          </div>
+
+          <div class="form-grid">
+            <label>
+              Source URL or Local File Path
+              <input id="source" placeholder="https://youtube.com/watch?v=... or C:\Videos\episode.mp4">
+            </label>
+
+            <div>
+              <div class="panel-label">Quick Presets</div>
+              <div class="preset-row">
+                <button class="preset" type="button" data-preset="balanced">Balanced</button>
+                <button class="preset" type="button" data-preset="shorts">Shorts Hunt</button>
+                <button class="preset" type="button" data-preset="deep">Long Highlights</button>
+              </div>
+            </div>
+
+            <div class="split">
+              <label>
+                LLM Model
+                <select id="model"></select>
+              </label>
+              <label>
+                Whisper Size
+                <select id="whisper">
+                  <option value="tiny">tiny</option>
+                  <option value="base">base</option>
+                  <option value="small">small</option>
+                  <option value="medium">medium</option>
+                  <option value="large">large</option>
+                </select>
+              </label>
+            </div>
+
+            <div class="triple">
+              <label>
+                Max Clips
+                <input id="clips" type="number" min="1" max="15" value="5">
+              </label>
+              <label>
+                Min Seconds
+                <input id="minSec" type="number" min="5" value="30">
+              </label>
+              <label>
+                Max Seconds
+                <input id="maxSec" type="number" min="10" value="90">
+              </label>
+            </div>
+
+            <label>
+              Gemini Fallback
+              <select id="gemini">
+                <option value="false" selected>Use local Ollama</option>
+                <option value="true">Use Gemini fallback</option>
+              </select>
+            </label>
+
+            <div class="button-row">
+              <button class="primary" id="runButton" type="button">Run This Video</button>
+              <button class="secondary" id="refreshButton" type="button">Refresh Dashboard</button>
+              <button class="ghost" id="openLogButton" type="button">Open Log File</button>
+            </div>
+
+            <div>
+              <div class="panel-label">Generated Command</div>
+              <div id="commandBox" class="command-box">python pipeline.py "YOUR_SOURCE"</div>
+            </div>
+          </div>
+        </article>
+
+        <article class="panel">
+          <div class="panel-head">
+            <div>
+              <div class="panel-label">Setup Radar</div>
+              <h2>Machine readiness</h2>
+              <p>These checks come straight from the local environment, not from a static checklist.</p>
+            </div>
+            <button class="ghost" id="startOllamaButton" type="button">Start Ollama</button>
+          </div>
+          <div id="setupList" class="setup-list"></div>
+        </article>
+
+        <article class="panel">
+          <div class="panel-head">
+            <div>
+              <div class="panel-label">Workspace</div>
+              <h2>Your operating base</h2>
+              <p>Quick access to the folders and files ClipForge uses most.</p>
+            </div>
+          </div>
+          <div class="enhance-panel" style="margin-bottom:14px">
+            <div class="toggle-row">
+              <span class="toggle-label">
+                Encoder Mode
+                <span id="encoderModeLabel">— libx264 (Quality)</span>
+              </span>
+              <label class="toggle-switch" title="Toggle GPU speed mode">
+                <input type="checkbox" id="encoderToggle">
+                <div class="toggle-track"></div>
+              </label>
+            </div>
+            <div class="enhance-status-msg" id="encoderModeSub">CPU — best quality</div>
+          </div>
+          <div id="workspacePath" class="workspace-path"></div>
+          <div class="button-row" style="margin-top:14px">
+            <button class="ghost" id="openOutputsButton" type="button">Open Outputs</button>
+            <button class="ghost" id="openTempButton" type="button">Open Temp</button>
+          </div>
+        </article>
+
+        <article class="panel">
+          <div class="panel-head">
+            <div>
+              <div class="panel-label">GPU Diagnostics</div>
+              <h2>Hardware visibility</h2>
+              <p>Check whether CUDA, NVENC, QuickSync, Real-ESRGAN, and NVIDIA drivers are actually exposed to ClipForge.</p>
+            </div>
+          </div>
+          <div id="gpuDiagBody" class="empty-state">
+            Run diagnostics to inspect what this app can really access on your machine.
+          </div>
+          <div class="button-row" style="margin-top:14px">
+            <button class="ghost" id="runDiagnosticsButton" type="button">Run Diagnostics</button>
+          </div>
+        </article>
+      </div>
+
+      <div class="stack">
+        <article class="panel">
+          <div class="panel-head">
+            <div>
+              <div class="panel-label">Live Run</div>
+              <h2 id="jobHeading">No active run</h2>
+              <p id="jobSubcopy">Start a video to populate this cockpit with stage updates and real-time logs.</p>
+            </div>
+            <div class="status-pill"><span id="stageDot" class="dot"></span><span id="stagePillText">Idle</span></div>
+          </div>
+
+          <div class="mini-grid">
+            <div class="mini-card stage-card">
+              <div class="stage-card-head">
+                <strong id="miniStage">Idle</strong>
+                <span id="stageDetail">Waiting for a run.</span>
+              </div>
+              <div class="stage-stepper">
+                <div class="stage-step" id="stage-download">
+                  <strong>⬇️ Downloading</strong>
+                  <span class="stage-meta"></span>
+                </div>
+                <div class="stage-step" id="stage-transcribe">
+                  <strong>🎙️ Transcribing</strong>
+                  <span class="stage-meta"></span>
+                </div>
+                <div class="stage-step" id="stage-analyze">
+                  <strong>🤖 Analyzing</strong>
+                  <span class="stage-meta"></span>
+                </div>
+                <div class="stage-step" id="stage-cut">
+                  <strong>✂️ Cutting Clips</strong>
+                  <span class="stage-meta"></span>
+                </div>
+                <div class="stage-step" id="stage-done">
+                  <strong>✅ Done</strong>
+                  <span class="stage-meta"></span>
+                </div>
+              </div>
+            </div>
+            <div class="mini-card">
+              <strong id="miniSource">No source</strong>
+              <span>Current input</span>
+            </div>
+            <div class="mini-card">
+              <strong id="miniClips">0</strong>
+              <span>Clips detected after run</span>
+            </div>
+          </div>
+
+          <div id="logBox" class="log-box empty">Logs will stream here once a run starts.</div>
+        </article>
+
+        <article class="panel">
+          <div class="results-head">
+            <div>
+              <div class="panel-label">Clip Library</div>
+              <h2>Recent outputs</h2>
+            </div>
+            <button class="ghost" id="openOutputsLibrary" type="button">Open Folder</button>
+          </div>
+          <div id="clipGrid" class="clip-grid"></div>
+        </article>
+
+        <article class="panel">
+          <div class="panel-head">
+            <div>
+              <div class="panel-label">Run Memory</div>
+              <h2>Recent job history</h2>
+            </div>
+          </div>
+          <div id="historyList" class="history-list"></div>
+        </article>
+      </div>
+    </section>
+  </main>
+
+  <div id="toast" class="toast"></div>
+
+  <script>
+    const state = { payload: null, pollTimer: null, videoObserver: null, clipSignature: "", enhancePolls: {} };
+    const enhanceState = {};
+    const stageOrder = ["download", "transcribe", "analyze", "cut", "done"];
+    const stageLabels = {
+      download: "Downloading",
+      transcribe: "Transcribing",
+      analyze: "Analyzing",
+      cut: "Cutting Clips",
+      done: "Done"
+    };
+
+    const presets = {
+      balanced: { clips: 5, minSec: 30, maxSec: 90, whisper: "base" },
+      shorts: { clips: 8, minSec: 18, maxSec: 55, whisper: "tiny" },
+      deep: { clips: 6, minSec: 45, maxSec: 120, whisper: "base" }
+    };
+
+    function $(id) {
+      return document.getElementById(id);
+    }
+
+    function escapeHtml(value) {
+      return String(value)
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;");
+    }
+
+    function truncate(value, max = 70) {
+      const text = String(value || "");
+      return text.length > max ? `${text.slice(0, max - 1)}...` : text;
+    }
+
+    function shellQuote(value) {
+      const safe = String(value || "").replaceAll('"', '\\"');
+      return `"${safe || "YOUR_SOURCE"}"`;
+    }
+
+    function showToast(message) {
+      const toast = $("toast");
+      toast.textContent = message;
+      toast.classList.add("show");
+      clearTimeout(showToast.timer);
+      showToast.timer = setTimeout(() => toast.classList.remove("show"), 2600);
+    }
+
+    async function postJson(url, payload = {}) {
+      const response = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(data.message || "Request failed");
+      }
+      return data;
+    }
+
+    function renderCommand() {
+      const source = $("source").value.trim();
+      const model = $("model").value || "mistral";
+      const whisper = $("whisper").value || "base";
+      const clips = $("clips").value || "5";
+      const minSec = $("minSec").value || "30";
+      const maxSec = $("maxSec").value || "90";
+      const useGemini = $("gemini").value === "true";
+      const parts = [
+        "python pipeline.py",
+        shellQuote(source),
+        `--model ${model}`,
+        `--whisper ${whisper}`,
+        `--clips ${clips}`,
+        `--min ${minSec}`,
+        `--max ${maxSec}`
+      ];
+      if (useGemini) parts.push("--gemini");
+      $("commandBox").textContent = parts.join(" ");
+      localStorage.setItem("clipforge-control-room", JSON.stringify({
+        source,
+        model,
+        whisper,
+        clips,
+        minSec,
+        maxSec,
+        gemini: useGemini
+      }));
+    }
+
+    function setPreset(name) {
+      const preset = presets[name];
+      if (!preset) return;
+      $("clips").value = preset.clips;
+      $("minSec").value = preset.minSec;
+      $("maxSec").value = preset.maxSec;
+      $("whisper").value = preset.whisper;
+      renderCommand();
+      showToast(`Preset applied: ${name}`);
+    }
+
+    function restoreForm(defaults = {}) {
+      const saved = localStorage.getItem("clipforge-control-room");
+      const values = saved ? JSON.parse(saved) : {};
+      $("source").value = values.source || "";
+      $("whisper").value = values.whisper || defaults.whisper || "base";
+      $("clips").value = values.clips || defaults.clips || 5;
+      $("minSec").value = values.minSec || defaults.min_sec || 30;
+      $("maxSec").value = values.maxSec || defaults.max_sec || 90;
+      $("gemini").value = String(Boolean(values.gemini));
+    }
+
+    function renderModelOptions(models, defaults) {
+      const select = $("model");
+      const current = select.value;
+      const chosen = current || localStorage.getItem("clipforge-model-choice") || defaults.model || "mistral";
+      const options = [...new Set([...(models || []), "mistral", "llama3", "qwen2.5-coder:7b"])];
+      select.innerHTML = options
+        .map((model) => `<option value="${escapeHtml(model)}">${escapeHtml(model)}</option>`)
+        .join("");
+      select.value = options.includes(chosen) ? chosen : options[0];
+      localStorage.setItem("clipforge-model-choice", select.value);
+    }
+
+    function statusClass(ok) {
+      return ok ? "ok" : "bad";
+    }
+
+    function jobClass(status) {
+      if (status === "succeeded") return "ok";
+      if (status === "failed") return "bad";
+      if (status === "running") return "warn";
+      return "";
+    }
+
+    function extractProgressState(job) {
+      const logs = job.logs || [];
+      const progress = {
+        activeStage: "download",
+        detail: job.active ? "Queued..." : "Waiting for a run.",
+        stageMeta: {
+          download: "",
+          transcribe: "",
+          analyze: "",
+          cut: "",
+          done: ""
+        },
+        failed: job.status === "failed"
+      };
+
+      for (const line of logs) {
+        const lowered = line.toLowerCase();
+        if (lowered.includes("stage 1/5")) {
+          progress.activeStage = "download";
+          progress.detail = "Preparing download...";
+        } else if (lowered.includes("stage 2/5")) {
+          progress.activeStage = "transcribe";
+          progress.detail = "Starting transcription...";
+        } else if (lowered.includes("stage 3/5")) {
+          progress.activeStage = "analyze";
+          progress.detail = "Handing transcript to the model...";
+        } else if (lowered.includes("stage 4/5")) {
+          progress.activeStage = "cut";
+          progress.detail = "Rendering selected clips...";
+        } else if (lowered.includes("stage 5/5") || lowered.includes("done. generated")) {
+          progress.activeStage = "done";
+          progress.detail = "Pipeline complete.";
+        }
+
+        const downloadMatch = line.match(/PROGRESS:download:(.+)$/);
+        if (downloadMatch) {
+          const value = downloadMatch[1].trim();
+          progress.activeStage = job.status === "succeeded" ? "done" : "download";
+          progress.detail = `Downloading ${value}`;
+          progress.stageMeta.download = value;
+        }
+
+        const transcribeMatch = line.match(/PROGRESS:transcribe:(.+)$/);
+        if (transcribeMatch) {
+          const value = transcribeMatch[1].trim();
+          progress.activeStage = job.status === "succeeded" ? "done" : "transcribe";
+          progress.detail = `Transcribing ${value}%`;
+          progress.stageMeta.transcribe = `${value}%`;
+        }
+
+        if (lowered.includes("built ") && lowered.includes("transcript chunk")) {
+          progress.activeStage = job.status === "succeeded" ? "done" : "analyze";
+          progress.detail = line.replace(/^.*?\[INFO\]\s*/, "");
+          progress.stageMeta.analyze = "Transcript chunked";
+        }
+
+        if (lowered.includes("selected ") && lowered.includes("clip")) {
+          progress.activeStage = job.status === "succeeded" ? "done" : "cut";
+          progress.detail = line.replace(/^.*?\[INFO\]\s*/, "");
+          progress.stageMeta.cut = "Clips selected";
+        }
+      }
+
+      if (job.status === "succeeded") {
+        progress.activeStage = "done";
+        progress.detail = `Finished with ${job.clip_count || 0} clip${job.clip_count === 1 ? "" : "s"}.`;
+        progress.stageMeta.done = "Complete";
+      } else if (job.status === "failed") {
+        progress.detail = "Run failed. Check the log panel for the last error.";
+      } else if (!job.active) {
+        progress.activeStage = "download";
+      }
+
+      return progress;
+    }
+
+    function renderStageStepper(job) {
+      const progress = extractProgressState(job);
+      $("miniStage").textContent = job.stage || stageLabels[progress.activeStage] || "Idle";
+      $("stageDetail").textContent = progress.detail;
+
+      const activeIndex = stageOrder.indexOf(progress.activeStage);
+      stageOrder.forEach((stageName, index) => {
+        const node = $(`stage-${stageName}`);
+        if (!node) return;
+        const meta = node.querySelector(".stage-meta");
+        node.classList.remove("active", "done", "error");
+        if (job.status === "failed" && index === activeIndex) {
+          node.classList.add("error");
+        } else if (index < activeIndex || (job.status === "succeeded" && stageName === "done")) {
+          node.classList.add("done");
+        } else if ((job.active || job.status === "failed" || job.status === "succeeded") && index === activeIndex) {
+          node.classList.add("active");
+        }
+        if (meta) {
+          meta.textContent = progress.stageMeta[stageName] || "";
+        }
+      });
+    }
+
+    function renderSetup(setup) {
+      $("systemHealth").textContent = setup.all_ok ? "Ready to clip" : "Needs setup";
+      const encoder = state.payload?.system?.encoder || "libx264";
+      $("systemCopy").textContent = setup.all_ok
+        ? "Core tools are available. You can launch jobs from this page."
+        : "One or more dependencies still need attention.";
+      $("systemCopy").textContent += ` Encoder: ${encoder}.`;
+
+      $("setupList").innerHTML = setup.checks.map((check) => `
+        <div class="setup-item">
+          <div style="display:flex;align-items:center;gap:10px">
+            <span class="dot ${statusClass(check.ok)}"></span>
+            <strong>${escapeHtml(check.message.replace(/^\[[^\]]+\]\s*/, ""))}</strong>
+          </div>
+          <code>${check.ok ? "OK" : "Fix needed"}</code>
+        </div>
+      `).join("");
+    }
+
+    function renderMetrics(payload) {
+      const models = payload.models || [];
+      $("modelCount").textContent = String(models.length);
+      $("modelList").textContent = models.length ? models.join(", ") : "No local models detected yet.";
+      $("clipCount").textContent = String((payload.clips || []).length);
+      $("clipCopy").textContent = payload.clips?.length
+        ? `${payload.clips.length} rendered clip${payload.clips.length === 1 ? "" : "s"} ready to review.`
+        : "Run a video to build your clip library.";
+    }
+
+    function renderEncoderMode(system) {
+      const preferQuality = Boolean(system?.prefer_quality);
+      const activeEncoder = system?.encoder || "libx264";
+      const speedEncoder = system?.speed_encoder || activeEncoder;
+      $("encoderToggle").checked = !preferQuality;
+      $("encoderModeLabel").textContent = preferQuality ? `— ${activeEncoder} (Quality)` : `— ${activeEncoder}`;
+      $("encoderModeSub").textContent = preferQuality
+        ? `CPU quality mode. Speed mode would use ${speedEncoder}.`
+        : `Speed mode active. Auto-detected encoder: ${activeEncoder}.`;
+      $("encoderModeSub").style.color = preferQuality ? "var(--muted)" : "var(--success)";
+    }
+
+    function renderJob(job) {
+      const statusText = job.active ? "Run active" : (job.status || "idle");
+      $("jobPillText").textContent = statusText;
+      $("stagePillText").textContent = job.stage || "Idle";
+      $("jobDot").className = `dot ${jobClass(job.status)}`;
+      $("stageDot").className = `dot ${jobClass(job.status)}`;
+      $("currentStage").textContent = job.stage || "Idle";
+      $("currentRunCopy").textContent = job.active
+        ? `Working on ${truncate(job.source || "your source", 54)}`
+        : (job.status === "succeeded"
+            ? `Last run finished with ${job.clip_count || 0} clip${job.clip_count === 1 ? "" : "s"}.`
+            : "No active run right now.");
+
+      $("jobHeading").textContent = job.active ? "ClipForge is running" : "Run monitor";
+      $("jobSubcopy").textContent = job.source
+        ? `${truncate(job.source, 92)}`
+        : "Start a video to populate this cockpit with stage updates and real-time logs.";
+
+      renderStageStepper(job);
+      $("miniSource").textContent = truncate(job.source || "No source", 28);
+      $("miniClips").textContent = String(job.clip_count || 0);
+
+      const logs = job.logs || [];
+      const logBox = $("logBox");
+      if (!logs.length) {
+        logBox.className = "log-box empty";
+        logBox.textContent = "Logs will stream here once a run starts.";
+      } else {
+        logBox.className = "log-box";
+        logBox.innerHTML = logs.map((line) => escapeHtml(line)).join("\n");
+        logBox.scrollTop = logBox.scrollHeight;
+      }
+
+      const running = Boolean(job.active);
+      $("runButton").disabled = running;
+      $("runTopButton").disabled = running;
+    }
+
+    function renderClips(clips) {
+      const grid = $("clipGrid");
+      const signature = JSON.stringify((clips || []).map((clip) => [clip.video_name, clip.modified_at]));
+      if (!clips.length) {
+        state.clipSignature = "";
+        grid.innerHTML = `<div class="empty-state">No rendered clips yet. Launch a run and your finished shorts will show up here with previews and file actions.</div>`;
+        return;
+      }
+      if (state.clipSignature === signature) {
+        return;
+      }
+      state.clipSignature = signature;
+
+      grid.innerHTML = clips.map((clip, index) => `
+        <article class="clip-card" style="animation-delay:${index * 40}ms">
+          <div class="clip-video-wrap" data-video-wrap>
+            <video class="clip-video" preload="metadata" playsinline loop muted src="${clip.video_url}"></video>
+            <div class="play-overlay">
+              <div class="play-btn-big" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="white" width="36" height="36">
+                  <polygon points="5 3 19 12 5 21 5 3"></polygon>
+                </svg>
+              </div>
+            </div>
+            <div class="clip-duration">${Number(clip.duration).toFixed(1)}s</div>
+            <button class="mute-btn" type="button" data-mute-toggle title="Toggle mute">🔇</button>
+          </div>
+          <div class="clip-info">
+            <h3>${escapeHtml(clip.title)}</h3>
+            <div class="meta-line" style="margin:10px 0 12px">
+              <span class="meta-chip">${escapeHtml(clip.video_size_mb)} MB</span>
+              <span class="meta-chip">${escapeHtml(clip.video_name)}</span>
+            </div>
+            <p class="clip-hook">${escapeHtml(clip.hook || "No hook saved for this clip.")}</p>
+          </div>
+          <div class="button-row">
+            <a href="${clip.video_url}" target="_blank"><button class="secondary" type="button">Open Video</button></a>
+            ${clip.json_url ? `<a href="${clip.json_url}" target="_blank"><button class="ghost" type="button">Open Metadata</button></a>` : ""}
+            <button class="ghost" type="button" data-open-relative="${escapeHtml(clip.video_relative)}">Reveal File</button>
+          </div>
+          <div class="enhance-panel" id="enhance-panel-${escapeHtml(clip.video_name)}">
+            <div class="toggle-row">
+              <span class="toggle-label">
+                ✨ Enhance Quality
+                <span id="mode-label-${escapeHtml(clip.video_name)}">— FFmpeg</span>
+              </span>
+              <label class="toggle-switch">
+                <input type="checkbox" id="ai-toggle-${escapeHtml(clip.video_name)}" data-ai-toggle="${escapeHtml(clip.video_name)}">
+                <div class="toggle-track"></div>
+              </label>
+            </div>
+            <div class="ai-badge" id="ai-badge-${escapeHtml(clip.video_name)}">
+              🤖 Real-ESRGAN AI mode — restores edges, faces, and textures. Takes 5–30 min depending on GPU.
+            </div>
+            <div class="scale-row" id="scale-row-${escapeHtml(clip.video_name)}">
+              <span>Scale:</span>
+              <button class="scale-btn active" type="button" id="scale2-${escapeHtml(clip.video_name)}" data-scale="2" data-scale-file="${escapeHtml(clip.video_name)}">×2 Faster</button>
+              <button class="scale-btn" type="button" id="scale4-${escapeHtml(clip.video_name)}" data-scale="4" data-scale-file="${escapeHtml(clip.video_name)}">×4 Sharpest</button>
+            </div>
+            <button class="btn-enhance" type="button" id="enhance-btn-${escapeHtml(clip.video_name)}" data-enhance-file="${escapeHtml(clip.video_name)}">
+              ✨ Enhance This Clip
+            </button>
+            <div class="enhance-progress" id="enhance-progress-${escapeHtml(clip.video_name)}">
+              <div class="enhance-progress-bar-wrap">
+                <div class="enhance-progress-bar" id="enhance-bar-${escapeHtml(clip.video_name)}"></div>
+              </div>
+              <div class="enhance-status-msg" id="enhance-msg-${escapeHtml(clip.video_name)}">Starting...</div>
+            </div>
+            <a class="btn-dl-enhanced" id="enhance-dl-${escapeHtml(clip.video_name)}" download>
+              ⬇ Download Enhanced Clip
+            </a>
+          </div>
+        </article>
+      `).join("");
+
+      bindClipVideoBehavior();
+      bindEnhanceControls();
+    }
+
+    function renderHistory(items) {
+      const box = $("historyList");
+      if (!items || !items.length) {
+        box.innerHTML = `<div class="empty-state">Completed runs will appear here once you start using the control room.</div>`;
+        return;
+      }
+
+      box.innerHTML = items.map((item) => `
+        <div class="history-item">
+          <div>
+            <strong>${escapeHtml(truncate(item.source || "Untitled run", 74))}</strong>
+            <span>${escapeHtml(item.stage || "Completed")} | ${escapeHtml(item.clip_count || 0)} clip${item.clip_count === 1 ? "" : "s"}</span>
+          </div>
+          <div class="status-pill"><span class="dot ${jobClass(item.status)}"></span><span>${escapeHtml(item.status || "idle")}</span></div>
+        </div>
+      `).join("");
+    }
+
+    function syncVideoWrapper(video) {
+      const wrapper = video.closest(".clip-video-wrap");
+      if (!wrapper) return;
+      wrapper.classList.toggle("playing", !video.paused && !video.ended);
+      const muteButton = wrapper.querySelector("[data-mute-toggle]");
+      if (muteButton) muteButton.textContent = video.muted ? "🔇" : "🔊";
+    }
+
+    function pauseAllClipVideos(exceptVideo = null) {
+      document.querySelectorAll(".clip-video").forEach((video) => {
+        if (video === exceptVideo) return;
+        video.pause();
+        syncVideoWrapper(video);
+      });
+    }
+
+    function toggleClipPlayback(wrapper) {
+      const video = wrapper.querySelector(".clip-video");
+      if (!video) return;
+      pauseAllClipVideos(video);
+      if (video.paused) {
+        video.play().then(() => {
+          syncVideoWrapper(video);
+        }).catch(() => {
+          syncVideoWrapper(video);
+        });
+        return;
+      }
+      video.pause();
+      syncVideoWrapper(video);
+    }
+
+    function toggleClipMute(button) {
+      const wrapper = button.closest(".clip-video-wrap");
+      const video = wrapper?.querySelector(".clip-video");
+      if (!video) return;
+      video.muted = !video.muted;
+      syncVideoWrapper(video);
+    }
+
+    function initVideoObserver() {
+      if (state.videoObserver) {
+        state.videoObserver.disconnect();
+      }
+      state.videoObserver = new IntersectionObserver((entries) => {
+        entries.forEach((entry) => {
+          if (entry.isIntersecting) return;
+          const video = entry.target.querySelector(".clip-video");
+          if (!video || video.paused) return;
+          video.pause();
+          syncVideoWrapper(video);
+        });
+      }, { threshold: 0.25 });
+
+      document.querySelectorAll(".clip-video-wrap").forEach((wrapper) => {
+        state.videoObserver.observe(wrapper);
+      });
+    }
+
+    function bindClipVideoBehavior() {
+      document.querySelectorAll(".clip-video-wrap").forEach((wrapper) => {
+        if (wrapper.dataset.bound === "true") return;
+        wrapper.dataset.bound = "true";
+        const video = wrapper.querySelector(".clip-video");
+        const muteButton = wrapper.querySelector("[data-mute-toggle]");
+        wrapper.addEventListener("click", () => toggleClipPlayback(wrapper));
+        if (muteButton) {
+          muteButton.addEventListener("click", (event) => {
+            event.stopPropagation();
+            toggleClipMute(muteButton);
+          });
+        }
+        if (video) {
+          ["pause", "play", "ended"].forEach((eventName) => {
+            video.addEventListener(eventName, () => syncVideoWrapper(video));
+          });
+          syncVideoWrapper(video);
+        }
+      });
+      initVideoObserver();
+    }
+
+    function ensureEnhanceDefaults(filename) {
+      if (!enhanceState[filename]) {
+        enhanceState[filename] = { mode: "fast", scale: 2 };
+      }
+      return enhanceState[filename];
+    }
+
+    function onAIToggle(filename, checked) {
+      const entry = ensureEnhanceDefaults(filename);
+      const isAI = Boolean(checked);
+      entry.mode = isAI ? "ai" : "fast";
+      $(`mode-label-${filename}`).textContent = isAI ? "— Real-ESRGAN AI" : "— FFmpeg";
+      $(`ai-badge-${filename}`).classList.toggle("visible", isAI);
+      $(`scale-row-${filename}`).classList.toggle("visible", isAI);
+    }
+
+    function setScale(filename, scale) {
+      const entry = ensureEnhanceDefaults(filename);
+      entry.scale = scale;
+      $(`scale2-${filename}`).classList.toggle("active", scale === 2);
+      $(`scale4-${filename}`).classList.toggle("active", scale === 4);
+    }
+
+    function updateEnhanceProgress(filename, progress, message, downloadUrl = "") {
+      const panel = $(`enhance-progress-${filename}`);
+      const bar = $(`enhance-bar-${filename}`);
+      const msg = $(`enhance-msg-${filename}`);
+      const dl = $(`enhance-dl-${filename}`);
+      if (!panel || !bar || !msg || !dl) return;
+      panel.classList.add("visible");
+      bar.style.width = `${progress}%`;
+      msg.textContent = message;
+      if (downloadUrl) {
+        dl.href = downloadUrl;
+        dl.classList.add("visible");
+      }
+    }
+
+    async function startEnhance(filename) {
+      const current = ensureEnhanceDefaults(filename);
+      const btn = $(`enhance-btn-${filename}`);
+      const dl = $(`enhance-dl-${filename}`);
+      btn.disabled = true;
+      btn.textContent = current.mode === "ai" ? "🤖 AI Enhancing... (may take 5–30 min)" : "⚙ Enhancing...";
+      dl.classList.remove("visible");
+      updateEnhanceProgress(
+        filename,
+        5,
+        current.mode === "ai" ? "Extracting frames for AI processing..." : "Applying denoise, sharpen, color boost..."
+      );
+
+      try {
+        const response = await postJson("/api/enhance", {
+          filename,
+          mode: current.mode,
+          scale: current.scale
+        });
+        const enhanceJobId = response.enhance_job_id;
+        if (state.enhancePolls[enhanceJobId]) {
+          clearInterval(state.enhancePolls[enhanceJobId]);
+        }
+        state.enhancePolls[enhanceJobId] = setInterval(async () => {
+          try {
+            const status = await fetch(`/api/enhance-status/${enhanceJobId}`, { cache: "no-store" }).then((r) => r.json());
+            updateEnhanceProgress(filename, status.progress || 0, status.message || `Processing... ${status.progress || 0}%`);
+            if (status.status === "done") {
+              clearInterval(state.enhancePolls[enhanceJobId]);
+              delete state.enhancePolls[enhanceJobId];
+              updateEnhanceProgress(filename, 100, "✅ Enhancement complete!", status.download_url || "");
+              btn.textContent = "✨ Enhanced ✓";
+              showToast("Enhanced clip is ready to download.");
+              return;
+            }
+            if (status.status === "error") {
+              clearInterval(state.enhancePolls[enhanceJobId]);
+              delete state.enhancePolls[enhanceJobId];
+              updateEnhanceProgress(filename, status.progress || 0, `❌ ${status.error || "Enhancement failed."}`);
+              btn.disabled = false;
+              btn.textContent = "✨ Enhance This Clip";
+            }
+          } catch (error) {
+            clearInterval(state.enhancePolls[enhanceJobId]);
+            delete state.enhancePolls[enhanceJobId];
+            updateEnhanceProgress(filename, 0, `❌ ${error.message}`);
+            btn.disabled = false;
+            btn.textContent = "✨ Enhance This Clip";
+          }
+        }, 2000);
+      } catch (error) {
+        updateEnhanceProgress(filename, 0, `❌ Request failed: ${error.message}`);
+        btn.disabled = false;
+        btn.textContent = "✨ Enhance This Clip";
+      }
+    }
+
+    function bindEnhanceControls() {
+      document.querySelectorAll("[data-ai-toggle]").forEach((checkbox) => {
+        if (checkbox.dataset.bound === "true") return;
+        checkbox.dataset.bound = "true";
+        const filename = checkbox.dataset.aiToggle;
+        ensureEnhanceDefaults(filename);
+        checkbox.addEventListener("change", () => onAIToggle(filename, checkbox.checked));
+        onAIToggle(filename, checkbox.checked);
+      });
+
+      document.querySelectorAll("[data-scale-file]").forEach((button) => {
+        if (button.dataset.bound === "true") return;
+        button.dataset.bound = "true";
+        button.addEventListener("click", () => setScale(button.dataset.scaleFile, Number(button.dataset.scale)));
+      });
+
+      document.querySelectorAll("[data-enhance-file]").forEach((button) => {
+        if (button.dataset.bound === "true") return;
+        button.dataset.bound = "true";
+        button.addEventListener("click", () => startEnhance(button.dataset.enhanceFile));
+      });
+    }
+
+    function renderWorkspace(payload) {
+      $("workspacePath").textContent = [
+        `Workspace: ${payload.workspace}`,
+        `Outputs: ${payload.folders.outputs}`,
+        `Temp: ${payload.folders.temp}`,
+        `Log: ${payload.folders.log}`,
+        `Encoder: ${payload.system?.encoder || "libx264"} (${payload.system?.prefer_quality ? "quality mode" : "speed mode"})`
+      ].join("\n");
+    }
+
+    function renderDiagRow(icon, label, value, ok) {
+      return `
+        <div class="diag-row">
+          <span style="font-size:16px">${icon}</span>
+          <span class="diag-label">${label}</span>
+          <span class="diag-value ${ok ? "good" : "bad"}">${escapeHtml(value)}</span>
+        </div>
+      `;
+    }
+
+    async function runDiagnostics() {
+      const body = $("gpuDiagBody");
+      const button = $("runDiagnosticsButton");
+      button.disabled = true;
+      button.textContent = "Checking...";
+      body.className = "workspace-path";
+      body.textContent = "Running hardware diagnostics...";
+
+      try {
+        const diagnostics = await fetch("/api/gpu-diagnostics", { cache: "no-store" }).then((r) => r.json());
+        const warning = !diagnostics.nvenc_available && diagnostics.nvidia_gpu
+          ? `
+            <div class="diag-warning">
+              ⚠ <strong>RTX GPU detected but NVENC not exposed.</strong><br>
+              This often happens on NVIDIA Optimus laptops where FFmpeg is running on the Intel path.<br><br>
+              Fix options:<br>
+              1. Open <strong>NVIDIA Control Panel</strong> → Manage 3D Settings → Program Settings → add <code>ffmpeg.exe</code> → set to High-performance NVIDIA processor.<br>
+              2. Or launch the app after setting:<br>
+              <code>$env:CUDA_VISIBLE_DEVICES="0"</code>
+            </div>
+          `
+          : "";
+
+        body.className = "";
+        body.innerHTML = `
+          <div class="diag-list">
+            ${renderDiagRow("🎮", "NVIDIA GPU", diagnostics.nvidia_gpu || "Not found", Boolean(diagnostics.nvidia_gpu))}
+            ${renderDiagRow("💾", "VRAM", diagnostics.nvidia_vram || "—", Boolean(diagnostics.nvidia_vram))}
+            ${renderDiagRow("🔧", "NVIDIA Driver", diagnostics.nvidia_driver || "Not found", Boolean(diagnostics.nvidia_gpu))}
+            ${renderDiagRow("⚡", "CUDA (PyTorch)", diagnostics.cuda_available ? (diagnostics.cuda_device || "Available") : "Not available", Boolean(diagnostics.cuda_available))}
+            ${renderDiagRow("🎬", "NVENC Encoder", diagnostics.nvenc_available ? "✓ Available" : "✗ Not exposed", Boolean(diagnostics.nvenc_available))}
+            ${renderDiagRow("🔵", "Intel QuickSync", diagnostics.qsv_available ? "✓ Available" : "✗ Not found", Boolean(diagnostics.qsv_available))}
+            ${renderDiagRow("🟠", "AMD AMF", diagnostics.amf_available ? "✓ Available" : "✗ Not found", Boolean(diagnostics.amf_available))}
+            ${renderDiagRow("🤖", "Real-ESRGAN", diagnostics.realesrgan_found ? "✓ Found" : "✗ Not installed", Boolean(diagnostics.realesrgan_found))}
+            ${renderDiagRow("🧠", "Ollama", diagnostics.ollama_running ? "✓ Running" : "✗ Not running", Boolean(diagnostics.ollama_running))}
+            ${renderDiagRow("🎞", "FFmpeg", String(diagnostics.ffmpeg_version || "").includes("ffmpeg") ? "✓ Installed" : "✗ Missing", true)}
+            ${renderDiagRow("✂", "Active Encoder", diagnostics.active_encoder || "Unknown", true)}
+          </div>
+          ${warning}
+        `;
+      } catch (error) {
+        body.className = "empty-state";
+        body.textContent = `Diagnostics failed: ${error.message}`;
+      } finally {
+        button.disabled = false;
+        button.textContent = "Run Diagnostics";
+      }
+    }
+
+    async function refreshDashboard() {
+      const response = await fetch("/api/dashboard", { cache: "no-store" });
+      const payload = await response.json();
+      state.payload = payload;
+      renderModelOptions(payload.models, payload.defaults);
+      if (!$("source").dataset.restored) {
+        restoreForm(payload.defaults);
+        $("source").dataset.restored = "true";
+      }
+      renderSetup(payload.setup);
+      renderMetrics(payload);
+      renderEncoderMode(payload.system || {});
+      renderJob(payload.job);
+      renderClips(payload.clips || []);
+      renderHistory(payload.job.history || []);
+      renderWorkspace(payload);
+      renderCommand();
+    }
+
+    async function runJob() {
+      const payload = {
+        source: $("source").value.trim(),
+        model: $("model").value,
+        whisper: $("whisper").value,
+        clips: Number($("clips").value || 5),
+        min_sec: Number($("minSec").value || 30),
+        max_sec: Number($("maxSec").value || 90),
+        gemini: $("gemini").value === "true"
+      };
+
+      try {
+        const response = await postJson("/api/run", payload);
+        showToast(response.message || "ClipForge run started.");
+        await refreshDashboard();
+      } catch (error) {
+        showToast(error.message);
+      }
+    }
+
+    async function startOllama() {
+      try {
+        const response = await postJson("/api/ollama/start");
+        showToast(response.message || "Ollama action sent.");
+        await refreshDashboard();
+      } catch (error) {
+        showToast(error.message);
+      }
+    }
+
+    async function openPath(relativePath) {
+      try {
+        const response = await postJson("/api/open", { path: relativePath });
+        showToast(response.message || "Opened.");
+      } catch (error) {
+        showToast(error.message);
+      }
+    }
+
+    async function setEncoderMode(enabled) {
+      try {
+        const response = await postJson("/api/set-encoder", { prefer_quality: !enabled });
+        showToast(`Encoder mode set to ${response.encoder}.`);
+        await refreshDashboard();
+      } catch (error) {
+        showToast(error.message);
+        $("encoderToggle").checked = Boolean(state.payload?.system && !state.payload.system.prefer_quality);
+      }
+    }
+
+    function attachEvents() {
+      ["source", "model", "whisper", "clips", "minSec", "maxSec", "gemini"].forEach((id) => {
+        $(id).addEventListener("input", renderCommand);
+        $(id).addEventListener("change", () => {
+          if (id === "model") localStorage.setItem("clipforge-model-choice", $("model").value);
+          renderCommand();
+        });
+      });
+
+      document.querySelectorAll("[data-preset]").forEach((button) => {
+        button.addEventListener("click", () => setPreset(button.dataset.preset));
+      });
+
+      $("runButton").addEventListener("click", runJob);
+      $("runTopButton").addEventListener("click", runJob);
+      $("refreshButton").addEventListener("click", refreshDashboard);
+      $("startOllamaButton").addEventListener("click", startOllama);
+      $("startOllamaTop").addEventListener("click", startOllama);
+      $("openOutputsButton").addEventListener("click", () => openPath("outputs/clips"));
+      $("openOutputsTop").addEventListener("click", () => openPath("outputs/clips"));
+      $("openOutputsLibrary").addEventListener("click", () => openPath("outputs/clips"));
+      $("openTempButton").addEventListener("click", () => openPath("temp"));
+      $("openLogButton").addEventListener("click", () => openPath("pipeline.log"));
+      $("encoderToggle").addEventListener("change", () => setEncoderMode($("encoderToggle").checked));
+      $("runDiagnosticsButton").addEventListener("click", runDiagnostics);
+
+      document.body.addEventListener("click", (event) => {
+        const target = event.target.closest("[data-open-relative]");
+        if (!target) return;
+        openPath(target.dataset.openRelative);
+      });
+    }
+
+    async function boot() {
+      attachEvents();
+      await refreshDashboard();
+      state.pollTimer = setInterval(refreshDashboard, 3000);
+    }
+
+    boot().catch((error) => showToast(error.message || "Could not load the ClipForge dashboard."));
+  </script>
+</body>
+</html>

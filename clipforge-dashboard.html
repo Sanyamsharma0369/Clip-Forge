@@ -1,0 +1,360 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ClipForge Dashboard</title>
+  <style>
+    :root {
+      --bg: #f4efe6;
+      --panel: rgba(255, 252, 246, 0.92);
+      --ink: #1e1d1a;
+      --muted: #6c665c;
+      --accent: #c64d2f;
+      --accent-2: #0f6a6f;
+      --line: rgba(30, 29, 26, 0.12);
+      --shadow: 0 24px 60px rgba(54, 39, 24, 0.16);
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      font-family: Georgia, "Times New Roman", serif;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at top left, rgba(198, 77, 47, 0.18), transparent 30%),
+        radial-gradient(circle at top right, rgba(15, 106, 111, 0.18), transparent 26%),
+        linear-gradient(135deg, #efe5d2, #f9f6ef 55%, #e8efe8);
+      min-height: 100vh;
+    }
+
+    .shell {
+      width: min(1120px, calc(100% - 32px));
+      margin: 32px auto;
+      display: grid;
+      gap: 20px;
+    }
+
+    .hero, .panel {
+      background: var(--panel);
+      backdrop-filter: blur(16px);
+      border: 1px solid var(--line);
+      border-radius: 24px;
+      box-shadow: var(--shadow);
+      padding: 24px;
+    }
+
+    .hero h1 {
+      margin: 0 0 12px;
+      font-size: clamp(2.2rem, 4vw, 4.2rem);
+      line-height: 0.95;
+      letter-spacing: -0.04em;
+    }
+
+    .hero p {
+      max-width: 760px;
+      margin: 0;
+      font-size: 1.05rem;
+      line-height: 1.6;
+      color: var(--muted);
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+      gap: 20px;
+    }
+
+    h2 {
+      margin: 0 0 14px;
+      font-size: 1.1rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    .field {
+      display: grid;
+      gap: 6px;
+      margin-bottom: 14px;
+    }
+
+    label {
+      font-size: 0.9rem;
+      color: var(--muted);
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+
+    input, select, textarea, button {
+      font: inherit;
+    }
+
+    input, select, textarea {
+      width: 100%;
+      padding: 12px 14px;
+      border-radius: 14px;
+      border: 1px solid rgba(30, 29, 26, 0.16);
+      background: rgba(255, 255, 255, 0.75);
+      color: var(--ink);
+    }
+
+    textarea {
+      min-height: 104px;
+      resize: vertical;
+    }
+
+    .command {
+      font-family: "Courier New", monospace;
+      background: #171511;
+      color: #f6f2ea;
+      padding: 16px;
+      border-radius: 16px;
+      min-height: 120px;
+      white-space: pre-wrap;
+    }
+
+    .actions {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-top: 14px;
+    }
+
+    button {
+      border: 0;
+      border-radius: 999px;
+      padding: 12px 18px;
+      cursor: pointer;
+      transition: transform 0.2s ease;
+    }
+
+    button:hover { transform: translateY(-1px); }
+    .primary { background: var(--accent); color: #fff7f1; }
+    .secondary { background: rgba(15, 106, 111, 0.12); color: var(--accent-2); }
+
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 14px;
+    }
+
+    .card {
+      padding: 16px;
+      border-radius: 18px;
+      background: rgba(255, 255, 255, 0.56);
+      border: 1px solid rgba(30, 29, 26, 0.08);
+    }
+
+    .card strong {
+      display: block;
+      margin-bottom: 8px;
+      font-size: 0.95rem;
+    }
+
+    ul {
+      margin: 0;
+      padding-left: 18px;
+      color: var(--muted);
+      line-height: 1.7;
+    }
+
+    .note {
+      color: var(--muted);
+      font-size: 0.95rem;
+      line-height: 1.6;
+    }
+
+    @media (max-width: 720px) {
+      .shell { width: min(100% - 20px, 1120px); margin: 18px auto; }
+      .hero, .panel { padding: 18px; border-radius: 20px; }
+      .actions { flex-direction: column; }
+      button { width: 100%; }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <section class="hero">
+      <h1>ClipForge</h1>
+      <p>Build zero-cost short-form clips from long videos with local tools. Use this page to generate the exact CLI command, keep your setup checklist close, and move faster when you're batch-processing podcasts, interviews, or educational videos.</p>
+    </section>
+
+    <section class="grid">
+      <article class="panel">
+        <h2>Command Builder</h2>
+        <div class="field">
+          <label for="source">Video URL or Local Path</label>
+          <input id="source" placeholder="https://youtube.com/watch?v=..." value="">
+        </div>
+        <div class="field">
+          <label for="model">LLM Model</label>
+          <select id="model">
+            <option value="mistral" selected>Mistral</option>
+            <option value="llama3">LLaMA 3</option>
+            <option value="gemma2">Gemma 2</option>
+            <option value="phi3">Phi 3</option>
+          </select>
+        </div>
+        <div class="grid">
+          <div class="field">
+            <label for="whisper">Whisper Size</label>
+            <select id="whisper">
+              <option value="tiny">tiny</option>
+              <option value="base" selected>base</option>
+              <option value="small">small</option>
+              <option value="medium">medium</option>
+              <option value="large">large</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="clips">Max Clips</label>
+            <input id="clips" type="number" min="1" max="15" value="5">
+          </div>
+          <div class="field">
+            <label for="min">Min Seconds</label>
+            <input id="min" type="number" min="5" value="30">
+          </div>
+          <div class="field">
+            <label for="max">Max Seconds</label>
+            <input id="max" type="number" min="10" value="90">
+          </div>
+        </div>
+        <div class="field">
+          <label for="extras">Extra Notes</label>
+          <textarea id="extras" placeholder="Optional notes for your own workflow. These do not affect the pipeline."></textarea>
+        </div>
+        <div class="field">
+          <label>Generated Command</label>
+          <div id="command" class="command">python pipeline.py "YOUR_SOURCE"</div>
+        </div>
+        <div class="actions">
+          <button class="primary" id="copyButton" type="button">Copy Command</button>
+          <button class="secondary" id="toggleGemini" type="button">Toggle Gemini</button>
+        </div>
+        <p class="note" id="modeNote">Mode: Ollama local inference</p>
+      </article>
+
+      <article class="panel">
+        <h2>Quick Run</h2>
+        <div class="cards">
+          <div class="card">
+            <strong>1. Start Ollama</strong>
+            <div class="command">ollama serve</div>
+          </div>
+          <div class="card">
+            <strong>2. Verify Setup</strong>
+            <div class="command">python setup_check.py</div>
+          </div>
+          <div class="card">
+            <strong>3. Run Pipeline</strong>
+            <div class="command">python pipeline.py "URL_OR_PATH"</div>
+          </div>
+          <div class="card">
+            <strong>4. Open Output</strong>
+            <div class="command">outputs/clips/</div>
+          </div>
+        </div>
+      </article>
+    </section>
+
+    <section class="grid">
+      <article class="panel">
+        <h2>Checklist</h2>
+        <ul>
+          <li>Install Python 3.10+ and Git.</li>
+          <li>Install FFmpeg and confirm it is on PATH.</li>
+          <li>Install Ollama and pull at least one local model.</li>
+          <li>Run <code>pip install -r requirements.txt</code>.</li>
+          <li>Optional: install WhisperX for better timestamps.</li>
+          <li>Optional: add a Gemini API key near the top of <code>pipeline.py</code>.</li>
+        </ul>
+      </article>
+
+      <article class="panel">
+        <h2>Troubleshooting</h2>
+        <ul>
+          <li><strong>ffmpeg not found:</strong> reinstall it and restart the terminal.</li>
+          <li><strong>Ollama unreachable:</strong> make sure <code>ollama serve</code> is still running.</li>
+          <li><strong>No module named whisper:</strong> rerun <code>pip install -r requirements.txt</code>.</li>
+          <li><strong>Bad YouTube downloads:</strong> update yt-dlp with <code>pip install -U yt-dlp</code>.</li>
+          <li><strong>No clips returned:</strong> widen your min and max clip duration.</li>
+        </ul>
+      </article>
+    </section>
+  </main>
+
+  <script>
+    const state = { gemini: false };
+    const ids = ["source", "model", "whisper", "clips", "min", "max", "extras"];
+
+    function shellQuote(value) {
+      const escaped = String(value || "").replace(/"/g, '\\"');
+      return `"${escaped || "YOUR_SOURCE"}"`;
+    }
+
+    function renderCommand() {
+      const source = document.getElementById("source").value.trim();
+      const model = document.getElementById("model").value;
+      const whisper = document.getElementById("whisper").value;
+      const clips = document.getElementById("clips").value || "5";
+      const min = document.getElementById("min").value || "30";
+      const max = document.getElementById("max").value || "90";
+      const parts = [
+        "python pipeline.py",
+        shellQuote(source),
+        `--model ${model}`,
+        `--whisper ${whisper}`,
+        `--clips ${clips}`,
+        `--min ${min}`,
+        `--max ${max}`
+      ];
+      if (state.gemini) parts.push("--gemini");
+      document.getElementById("command").textContent = parts.join(" ");
+      document.getElementById("modeNote").textContent = state.gemini ? "Mode: Gemini API fallback" : "Mode: Ollama local inference";
+      const payload = {};
+      for (const id of ids) payload[id] = document.getElementById(id).value;
+      payload.gemini = state.gemini;
+      localStorage.setItem("clipforge-dashboard", JSON.stringify(payload));
+    }
+
+    function restore() {
+      const raw = localStorage.getItem("clipforge-dashboard");
+      if (!raw) return renderCommand();
+      try {
+        const saved = JSON.parse(raw);
+        for (const id of ids) {
+          if (saved[id] !== undefined) document.getElementById(id).value = saved[id];
+        }
+        state.gemini = Boolean(saved.gemini);
+      } catch (_) {
+        state.gemini = false;
+      }
+      renderCommand();
+    }
+
+    ids.forEach((id) => {
+      document.getElementById(id).addEventListener("input", renderCommand);
+      document.getElementById(id).addEventListener("change", renderCommand);
+    });
+
+    document.getElementById("toggleGemini").addEventListener("click", () => {
+      state.gemini = !state.gemini;
+      renderCommand();
+    });
+
+    document.getElementById("copyButton").addEventListener("click", async () => {
+      const text = document.getElementById("command").textContent;
+      try {
+        await navigator.clipboard.writeText(text);
+        document.getElementById("copyButton").textContent = "Copied";
+        setTimeout(() => { document.getElementById("copyButton").textContent = "Copy Command"; }, 1200);
+      } catch (_) {
+        document.getElementById("copyButton").textContent = "Copy failed";
+      }
+    });
+
+    restore();
+  </script>
+</body>
+</html>
