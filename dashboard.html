@@ -2167,10 +2167,27 @@
       });
     }
 
+    async function startPolling() {
+      if (state.pollTimer) {
+        clearTimeout(state.pollTimer);
+      }
+      
+      try {
+        await refreshDashboard();
+      } catch (err) {
+        console.error("Polling error:", err);
+      }
+      
+      // Active job? 5s interval. Idle? 30s interval.
+      const isActive = state.payload?.job?.active;
+      const interval = isActive ? 5000 : 30000;
+      
+      state.pollTimer = setTimeout(startPolling, interval);
+    }
+
     async function boot() {
       attachEvents();
-      await refreshDashboard();
-      state.pollTimer = setInterval(refreshDashboard, 3000);
+      await startPolling();
     }
 
     boot().catch((error) => showToast(error.message || "Could not load the ClipForge dashboard."));
