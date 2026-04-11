@@ -6,7 +6,6 @@ import mimetypes
 import os
 import re
 import shutil
-import socketserver
 import subprocess
 import sys
 import threading
@@ -119,7 +118,11 @@ def list_ollama_models() -> list[str]:
 def get_cached_setup(force: bool = False) -> dict[str, Any]:
     """Return setup checks with a short-lived cache."""
     now = time.monotonic()
-    if not force and SETUP_CACHE["payload"] is not None and now - float(SETUP_CACHE["timestamp"]) < SETUP_CACHE_TTL:
+    if (
+        not force
+        and SETUP_CACHE["payload"] is not None
+        and now - float(SETUP_CACHE["timestamp"]) < SETUP_CACHE_TTL
+    ):
         return SETUP_CACHE["payload"]
     checks = setup_check.collect_checks()
     payload = {"checks": checks, "all_ok": all(bool(check["ok"]) for check in checks)}
@@ -130,7 +133,11 @@ def get_cached_setup(force: bool = False) -> dict[str, Any]:
 def get_cached_models(force: bool = False) -> list[str]:
     """Return installed model names with a short-lived cache."""
     now = time.monotonic()
-    if not force and MODELS_CACHE["payload"] and now - float(MODELS_CACHE["timestamp"]) < MODELS_CACHE_TTL:
+    if (
+        not force
+        and MODELS_CACHE["payload"]
+        and now - float(MODELS_CACHE["timestamp"]) < MODELS_CACHE_TTL
+    ):
         return MODELS_CACHE["payload"]
     models = list_ollama_models()
     MODELS_CACHE.update({"timestamp": now, "payload": models})
@@ -145,7 +152,9 @@ def gpu_diagnostics() -> dict[str, Any]:
         import torch  # type: ignore
 
         results["cuda_available"] = torch.cuda.is_available()
-        results["cuda_device"] = torch.cuda.get_device_name(0) if torch.cuda.is_available() else None
+        results["cuda_device"] = (
+            torch.cuda.get_device_name(0) if torch.cuda.is_available() else None
+        )
         results["cuda_version"] = torch.version.cuda
         results["torch_version"] = torch.__version__
     except ImportError:
@@ -171,14 +180,26 @@ def gpu_diagnostics() -> dict[str, Any]:
         results["ollama_running"] = False
 
     ffmpeg_binary = pipeline.ensure_ffmpeg_on_path()
-    ffmpeg_result = subprocess.run([ffmpeg_binary, "-version"], capture_output=True, text=True)
-    results["ffmpeg_version"] = ffmpeg_result.stdout.splitlines()[0] if ffmpeg_result.returncode == 0 else "not found"
+    ffmpeg_result = subprocess.run(
+        [ffmpeg_binary, "-version"], capture_output=True, text=True
+    )
+    results["ffmpeg_version"] = (
+        ffmpeg_result.stdout.splitlines()[0]
+        if ffmpeg_result.returncode == 0
+        else "not found"
+    )
 
-    active_encoder, _ = pipeline.detect_encoder(prefer_quality=pipeline.ENCODER_PREFER_QUALITY)
+    active_encoder, _ = pipeline.detect_encoder(
+        prefer_quality=pipeline.ENCODER_PREFER_QUALITY
+    )
     results["active_encoder"] = active_encoder
 
     smi = subprocess.run(
-        ["nvidia-smi", "--query-gpu=name,driver_version,memory.total", "--format=csv,noheader"],
+        [
+            "nvidia-smi",
+            "--query-gpu=name,driver_version,memory.total",
+            "--format=csv,noheader",
+        ],
         capture_output=True,
         text=True,
     )
@@ -205,7 +226,7 @@ def load_clips() -> list[dict[str, Any]]:
     """Load clip metadata enriched for the dashboard, rebuilding from sidecars if needed."""
     metadata_path = pipeline.OUTPUT_DIR / "clips_metadata.json"
     records = load_json(metadata_path, [])
-    
+
     # ── Rebuild from .json sidecars if metadata is missing or empty ──────────
     if not records and pipeline.OUTPUT_DIR.exists():
         records = []
@@ -220,19 +241,23 @@ def load_clips() -> list[dict[str, Any]]:
                     continue
                 seen_files.add(mp4_name)
                 # Normalize into standard metadata shape
-                records.append({
-                    "video_name": entry.get("video_name", "unknown"),
-                    "title": entry.get("title", json_file.stem),
-                    "start": entry.get("start", 0),
-                    "end": entry.get("end", 0),
-                    "score": entry.get("score", 0),
-                    "reason": entry.get("reason", ""),
-                    "output_file": mp4_name,
-                    "video_path": str((pipeline.OUTPUT_DIR / mp4_name).resolve()),
-                    "subtitle_path": str((pipeline.TEMP_DIR / (json_file.stem + ".srt")).resolve()),
-                    "generated_at": entry.get("generated_at", ""),
-                    "subtitle_style": entry.get("subtitle_style", 0),
-                })
+                records.append(
+                    {
+                        "video_name": entry.get("video_name", "unknown"),
+                        "title": entry.get("title", json_file.stem),
+                        "start": entry.get("start", 0),
+                        "end": entry.get("end", 0),
+                        "score": entry.get("score", 0),
+                        "reason": entry.get("reason", ""),
+                        "output_file": mp4_name,
+                        "video_path": str((pipeline.OUTPUT_DIR / mp4_name).resolve()),
+                        "subtitle_path": str(
+                            (pipeline.TEMP_DIR / (json_file.stem + ".srt")).resolve()
+                        ),
+                        "generated_at": entry.get("generated_at", ""),
+                        "subtitle_style": entry.get("subtitle_style", 0),
+                    }
+                )
             except Exception:
                 continue
         if records:
@@ -245,23 +270,31 @@ def load_clips() -> list[dict[str, Any]]:
     for record in records:
         if not isinstance(record, dict):
             continue
-        
+
         # Determine path to video
         v_name = record.get("output_file") or record.get("video_name") or ""
         if v_name and not v_name.endswith(".mp4") and "." not in v_name:
-             v_name += ".mp4"
-        
+            v_name += ".mp4"
+
         video_path = pipeline.OUTPUT_DIR / v_name
         if not video_path.exists():
             # Try absolute path from record
             raw_video_path = Path(str(record.get("video_path", "")))
-            video_path = raw_video_path if raw_video_path.is_absolute() else (ROOT_DIR / raw_video_path)
-            
+            video_path = (
+                raw_video_path
+                if raw_video_path.is_absolute()
+                else (ROOT_DIR / raw_video_path)
+            )
+
         if not video_path.exists():
             continue
 
         raw_subtitle_path = Path(str(record.get("subtitle_path", "")))
-        subtitle_path = raw_subtitle_path if raw_subtitle_path.is_absolute() else (ROOT_DIR / raw_subtitle_path)
+        subtitle_path = (
+            raw_subtitle_path
+            if raw_subtitle_path.is_absolute()
+            else (ROOT_DIR / raw_subtitle_path)
+        )
         json_path = pipeline.OUTPUT_DIR / f"{video_path.stem}.json"
 
         clips.append(
@@ -271,16 +304,28 @@ def load_clips() -> list[dict[str, Any]]:
                 "reason": record.get("reason", ""),
                 "start": record.get("start", 0),
                 "end": record.get("end", 0),
-                "duration": record.get("duration", 0) or round(float(record.get("end", 0)) - float(record.get("start", 0)), 2),
+                "duration": record.get("duration", 0)
+                or round(
+                    float(record.get("end", 0)) - float(record.get("start", 0)), 2
+                ),
                 "video_name": video_path.name,
                 "video_size_mb": round(video_path.stat().st_size / (1024 * 1024), 2),
-                "modified_at": record.get("generated_at") or datetime.fromtimestamp(video_path.stat().st_mtime, tz=timezone.utc).isoformat(),
+                "modified_at": record.get("generated_at")
+                or datetime.fromtimestamp(
+                    video_path.stat().st_mtime, tz=timezone.utc
+                ).isoformat(),
                 "video_url": to_relative_url(video_path),
                 "json_url": to_relative_url(json_path) if json_path.exists() else "",
-                "subtitle_url": to_relative_url(subtitle_path) if subtitle_path.exists() else "",
-                "thumbnail_url": to_relative_url(video_path.with_suffix(".jpg")) if video_path.with_suffix(".jpg").exists() else "",
+                "subtitle_url": to_relative_url(subtitle_path)
+                if subtitle_path.exists()
+                else "",
+                "thumbnail_url": to_relative_url(video_path.with_suffix(".jpg"))
+                if video_path.with_suffix(".jpg").exists()
+                else "",
                 "video_path": str(video_path.resolve()),
-                "video_relative": str(video_path.resolve().relative_to(ROOT_DIR)).replace("\\", "/"),
+                "video_relative": str(
+                    video_path.resolve().relative_to(ROOT_DIR)
+                ).replace("\\", "/"),
                 "json_path": str(json_path.resolve()) if json_path.exists() else "",
             }
         )
@@ -322,7 +367,9 @@ def _enhance_fast(src: Path, out: Path, job_id: str) -> None:
     """Enhance a clip using FFmpeg-only filters."""
     update_enhance_job(job_id, progress=10, message="Applying filters...")
     ffmpeg_binary = pipeline.ensure_ffmpeg_on_path()
-    _, encoder_flags = pipeline.detect_encoder(prefer_quality=pipeline.ENCODER_PREFER_QUALITY)
+    _, encoder_flags = pipeline.detect_encoder(
+        prefer_quality=pipeline.ENCODER_PREFER_QUALITY
+    )
     command = [
         ffmpeg_binary,
         "-y",
@@ -351,7 +398,9 @@ def _enhance_fast(src: Path, out: Path, job_id: str) -> None:
     update_enhance_job(job_id, progress=90, message="Encoding...")
     result = subprocess.run(command, capture_output=True, text=True)
     if result.returncode != 0:
-        raise RuntimeError((result.stderr or result.stdout or "FFmpeg enhancement failed")[-500:])
+        raise RuntimeError(
+            (result.stderr or result.stdout or "FFmpeg enhancement failed")[-500:]
+        )
 
 
 def _enhance_ai(src: Path, out: Path, scale: int, job_id: str) -> None:
@@ -389,10 +438,16 @@ def _enhance_ai(src: Path, out: Path, scale: int, job_id: str) -> None:
         ]
         result = subprocess.run(extract_command, capture_output=True, text=True)
         if result.returncode != 0:
-            raise RuntimeError((result.stderr or result.stdout or "Frame extraction failed")[-500:])
+            raise RuntimeError(
+                (result.stderr or result.stdout or "Frame extraction failed")[-500:]
+            )
 
         frame_count = len(list(frames_in.glob("*.png")))
-        update_enhance_job(job_id, progress=30, message=f"AI upscaling {frame_count} frames (may take 5-30 min)...")
+        update_enhance_job(
+            job_id,
+            progress=30,
+            message=f"AI upscaling {frame_count} frames (may take 5-30 min)...",
+        )
 
         upscale_command = [
             enhancer_binary,
@@ -409,13 +464,19 @@ def _enhance_ai(src: Path, out: Path, scale: int, job_id: str) -> None:
             "-g",
             pipeline.GPUOrchestrator.REALESRGAN_GPU_ID,
         ]
-        update_enhance_job(job_id, progress=35, message=f"Running Real-ESRGAN x{scale}...")
+        update_enhance_job(
+            job_id, progress=35, message=f"Running Real-ESRGAN x{scale}..."
+        )
         result = subprocess.run(upscale_command, capture_output=True, text=True)
         if result.returncode != 0:
-            raise RuntimeError((result.stderr or result.stdout or "Real-ESRGAN failed")[-500:])
+            raise RuntimeError(
+                (result.stderr or result.stdout or "Real-ESRGAN failed")[-500:]
+            )
 
         fps = extract_src_fps(src)
-        update_enhance_job(job_id, progress=85, message="Reassembling enhanced frames...")
+        update_enhance_job(
+            job_id, progress=85, message="Reassembling enhanced frames..."
+        )
         reassemble_command = [
             ffmpeg_binary,
             "-y",
@@ -464,7 +525,9 @@ def _enhance_ai(src: Path, out: Path, scale: int, job_id: str) -> None:
         ]
         result = subprocess.run(reassemble_command, capture_output=True, text=True)
         if result.returncode != 0:
-            raise RuntimeError((result.stderr or result.stdout or "Frame reassembly failed")[-500:])
+            raise RuntimeError(
+                (result.stderr or result.stdout or "Frame reassembly failed")[-500:]
+            )
     finally:
         remove_tree(frames_in)
         remove_tree(frames_out)
@@ -567,7 +630,10 @@ class JobManager:
             "model": snapshot["config"].get("model", pipeline.OLLAMA_MODEL),
             "use_gemini": bool(snapshot["config"].get("gemini")),
         }
-        self._history = [entry, *[item for item in self._history if item.get("id") != entry["id"]]][:MAX_HISTORY_ITEMS]
+        self._history = [
+            entry,
+            *[item for item in self._history if item.get("id") != entry["id"]],
+        ][:MAX_HISTORY_ITEMS]
         self._persist_history()
 
     def start_job(self, config: dict[str, Any]) -> tuple[bool, str]:
@@ -652,14 +718,16 @@ class JobManager:
                 text=True,
                 bufsize=1,
             )
-            threading.Thread(target=self._watch_process, args=(self._process, job_id), daemon=True).start()
+            threading.Thread(
+                target=self._watch_process, args=(self._process, job_id), daemon=True
+            ).start()
 
         return True, "ClipForge run started."
 
     def _watch_process(self, process: subprocess.Popen[str], job_id: str) -> None:
         """Capture live logs, filter noise, and finalize job state."""
         assert process.stdout is not None
-        
+
         ffmpeg_noise = re.compile(
             r"(frame=\s*\d+|fps=|bitrate=|speed=|size=\s*\d+kB"
             r"|time=\d+:\d+:\d+|dup=|drop=|Output #|Input #"
@@ -669,14 +737,24 @@ class JobManager:
 
         for raw_line in process.stdout:
             line = raw_line.rstrip()
-            
+
             # Filter FFmpeg noise
             stripped = line.strip()
-            if not stripped: continue
-            if ffmpeg_noise.search(stripped): continue
-            
+            if not stripped:
+                continue
+            if ffmpeg_noise.search(stripped):
+                continue
+
             # Junk threshold for long lines without log markers
-            markers = ("[INFO]", "[WARNING]", "[ERROR]", "Stage", "Done.", "Saved clip", "Face tracking")
+            markers = (
+                "[INFO]",
+                "[WARNING]",
+                "[ERROR]",
+                "Stage",
+                "Done.",
+                "Saved clip",
+                "Face tracking",
+            )
             if len(stripped) > 200 and not any(m in stripped for m in markers):
                 continue
 
@@ -684,11 +762,14 @@ class JobManager:
             with self._lock:
                 if not self._job or self._job.get("id") != job_id:
                     continue
-                
+
                 # Tag for frontend
-                if "[ERROR]" in line: tagged = f"[ERROR] {line}"
-                elif "[WARNING]" in line: tagged = f"[WARNING] {line}"
-                else: tagged = line
+                if "[ERROR]" in line:
+                    tagged = f"[ERROR] {line}"
+                elif "[WARNING]" in line:
+                    tagged = f"[WARNING] {line}"
+                else:
+                    tagged = line
 
                 logs = deque(self._job.get("logs", []), maxlen=MAX_LOG_LINES)
                 logs.append(tagged)
@@ -703,7 +784,9 @@ class JobManager:
             if not self._job or self._job.get("id") != job_id:
                 return
             baseline_videos = set(self._job.get("baseline_videos", []))
-            new_clips = [clip for clip in clips if clip["video_name"] not in baseline_videos]
+            new_clips = [
+                clip for clip in clips if clip["video_name"] not in baseline_videos
+            ]
             self._job["exit_code"] = exit_code
             self._job["finished_at"] = now_iso()
             self._job["clip_count"] = len(new_clips)
@@ -755,7 +838,11 @@ class JobManager:
         if not binary:
             return False, "Ollama was not found on this machine."
 
-        kwargs: dict[str, Any] = {"cwd": str(ROOT_DIR), "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL}
+        kwargs: dict[str, Any] = {
+            "cwd": str(ROOT_DIR),
+            "stdout": subprocess.DEVNULL,
+            "stderr": subprocess.DEVNULL,
+        }
         if sys.platform.startswith("win"):
             kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
         subprocess.Popen([binary, "serve"], **kwargs)
@@ -769,11 +856,16 @@ def dashboard_payload() -> dict[str, Any]:
     """Build the full dashboard state payload."""
     now = time.monotonic()
     cached_payload = PAYLOAD_CACHE["payload"]
-    if cached_payload is not None and now - float(PAYLOAD_CACHE["timestamp"]) < PAYLOAD_CACHE_TTL:
+    if (
+        cached_payload is not None
+        and now - float(PAYLOAD_CACHE["timestamp"]) < PAYLOAD_CACHE_TTL
+    ):
         return cached_payload
 
     clips = load_clips()
-    encoder_name, _ = pipeline.detect_encoder(prefer_quality=pipeline.ENCODER_PREFER_QUALITY)
+    encoder_name, _ = pipeline.detect_encoder(
+        prefer_quality=pipeline.ENCODER_PREFER_QUALITY
+    )
     speed_encoder_name, _ = pipeline.detect_encoder(prefer_quality=False)
     payload = {
         "workspace": str(ROOT_DIR),
@@ -905,7 +997,14 @@ class ClipForgeHandler(BaseHTTPRequestHandler):
                 job_id = parsed.path.rsplit("/", 1)[-1]
                 job = get_enhance_job(job_id)
                 if not job:
-                    self._send_json({"enhance_job_id": job_id, "status": "error", "error": "Unknown enhancement job."}, status=HTTPStatus.NOT_FOUND)
+                    self._send_json(
+                        {
+                            "enhance_job_id": job_id,
+                            "status": "error",
+                            "error": "Unknown enhancement job.",
+                        },
+                        status=HTTPStatus.NOT_FOUND,
+                    )
                     return
                 self._send_json(job)
                 return
@@ -920,7 +1019,9 @@ class ClipForgeHandler(BaseHTTPRequestHandler):
                 self.send_response(HTTPStatus.OK)
                 self.send_header("Content-Type", "video/mp4")
                 self.send_header("Content-Length", str(len(body)))
-                self.send_header("Content-Disposition", f'attachment; filename="{target.name}"')
+                self.send_header(
+                    "Content-Disposition", f'attachment; filename="{target.name}"'
+                )
                 self.send_header("Cache-Control", "no-store")
                 self.send_header("Connection", "close")
                 self.end_headers()
@@ -944,7 +1045,10 @@ class ClipForgeHandler(BaseHTTPRequestHandler):
                 sources = [payload["source"]]
 
             if not sources:
-                self._send_json({"ok": False, "message": "No source URLs provided"}, status=HTTPStatus.BAD_REQUEST)
+                self._send_json(
+                    {"ok": False, "message": "No source URLs provided"},
+                    status=HTTPStatus.BAD_REQUEST,
+                )
                 return
 
             results = []
@@ -958,7 +1062,12 @@ class ClipForgeHandler(BaseHTTPRequestHandler):
 
             queued_count = sum(1 for r in results if r["ok"])
             self._send_json(
-                {"ok": True, "queued": queued_count, "results": results, "job": JOB_MANAGER.snapshot()},
+                {
+                    "ok": True,
+                    "queued": queued_count,
+                    "results": results,
+                    "job": JOB_MANAGER.snapshot(),
+                },
                 status=HTTPStatus.OK,
             )
             return
@@ -966,7 +1075,10 @@ class ClipForgeHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/ollama/start":
             ok, message = JOB_MANAGER.start_ollama()
             status = HTTPStatus.OK if ok else HTTPStatus.BAD_REQUEST
-            self._send_json({"ok": ok, "message": message, "setup": get_cached_setup(force=True)}, status=status)
+            self._send_json(
+                {"ok": ok, "message": message, "setup": get_cached_setup(force=True)},
+                status=status,
+            )
             return
 
         if parsed.path == "/api/open":
@@ -974,10 +1086,19 @@ class ClipForgeHandler(BaseHTTPRequestHandler):
             try:
                 target = resolve_workspace_path(relative_path)
             except ValueError:
-                self._send_json({"ok": False, "message": "That path is outside the ClipForge workspace."}, status=HTTPStatus.BAD_REQUEST)
+                self._send_json(
+                    {
+                        "ok": False,
+                        "message": "That path is outside the ClipForge workspace.",
+                    },
+                    status=HTTPStatus.BAD_REQUEST,
+                )
                 return
             if not target.exists():
-                self._send_json({"ok": False, "message": "That path does not exist yet."}, status=HTTPStatus.NOT_FOUND)
+                self._send_json(
+                    {"ok": False, "message": "That path does not exist yet."},
+                    status=HTTPStatus.NOT_FOUND,
+                )
                 return
             try:
                 if sys.platform.startswith("win"):
@@ -987,7 +1108,10 @@ class ClipForgeHandler(BaseHTTPRequestHandler):
                 else:
                     subprocess.Popen(["xdg-open", str(target)], cwd=str(ROOT_DIR))
             except OSError as exc:
-                self._send_json({"ok": False, "message": f"Could not open path: {exc}"}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
+                self._send_json(
+                    {"ok": False, "message": f"Could not open path: {exc}"},
+                    status=HTTPStatus.INTERNAL_SERVER_ERROR,
+                )
                 return
             self._send_json({"ok": True, "message": f"Opened {target.name}."})
             return
@@ -995,7 +1119,10 @@ class ClipForgeHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/open-folder":
             rel_path = str(payload.get("path", "")).strip()
             if not rel_path:
-                self._send_json({"ok": False, "error": "No path provided"}, status=HTTPStatus.BAD_REQUEST)
+                self._send_json(
+                    {"ok": False, "error": "No path provided"},
+                    status=HTTPStatus.BAD_REQUEST,
+                )
                 return
 
             abs_path = (ROOT_DIR / rel_path).resolve()
@@ -1009,19 +1136,29 @@ class ClipForgeHandler(BaseHTTPRequestHandler):
                     subprocess.Popen(["xdg-open", str(abs_path)])
                 self._send_json({"ok": True})
             except Exception as exc:
-                self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
+                self._send_json(
+                    {"ok": False, "error": str(exc)},
+                    status=HTTPStatus.INTERNAL_SERVER_ERROR,
+                )
             return
 
         if parsed.path == "/api/set-encoder":
             raw_preference = payload.get("prefer_quality", True)
             if isinstance(raw_preference, str):
-                prefer_quality = raw_preference.strip().lower() not in {"false", "0", "off", "no"}
+                prefer_quality = raw_preference.strip().lower() not in {
+                    "false",
+                    "0",
+                    "off",
+                    "no",
+                }
             else:
                 prefer_quality = bool(raw_preference)
             pipeline.ENCODER_PREFER_QUALITY = prefer_quality
             pipeline.detect_encoder.cache_clear()
             PAYLOAD_CACHE.update({"timestamp": 0.0, "payload": None})
-            encoder_name, _ = pipeline.detect_encoder(prefer_quality=pipeline.ENCODER_PREFER_QUALITY)
+            encoder_name, _ = pipeline.detect_encoder(
+                prefer_quality=pipeline.ENCODER_PREFER_QUALITY
+            )
             self._send_json(
                 {
                     "ok": True,
@@ -1037,18 +1174,30 @@ class ClipForgeHandler(BaseHTTPRequestHandler):
             mode = str(payload.get("mode", "fast")).strip().lower()
             scale = int(payload.get("scale", 2) or 2)
             if mode not in {"fast", "ai"}:
-                self._send_json({"ok": False, "message": "Mode must be 'fast' or 'ai'."}, status=HTTPStatus.BAD_REQUEST)
+                self._send_json(
+                    {"ok": False, "message": "Mode must be 'fast' or 'ai'."},
+                    status=HTTPStatus.BAD_REQUEST,
+                )
                 return
             if scale not in {2, 4}:
-                self._send_json({"ok": False, "message": "Scale must be 2 or 4."}, status=HTTPStatus.BAD_REQUEST)
+                self._send_json(
+                    {"ok": False, "message": "Scale must be 2 or 4."},
+                    status=HTTPStatus.BAD_REQUEST,
+                )
                 return
             try:
                 src = safe_output_clip(filename)
             except ValueError:
-                self._send_json({"ok": False, "message": "Invalid filename."}, status=HTTPStatus.BAD_REQUEST)
+                self._send_json(
+                    {"ok": False, "message": "Invalid filename."},
+                    status=HTTPStatus.BAD_REQUEST,
+                )
                 return
             if not src.exists():
-                self._send_json({"ok": False, "message": "Clip not found in outputs/clips."}, status=HTTPStatus.NOT_FOUND)
+                self._send_json(
+                    {"ok": False, "message": "Clip not found in outputs/clips."},
+                    status=HTTPStatus.NOT_FOUND,
+                )
                 return
 
             enhance_job_id = f"enh_{uuid.uuid4().hex[:8]}"

@@ -17,7 +17,9 @@ def status_line(ok: bool, label: str, fix: str = "") -> str:
 def check_python() -> tuple[bool, str]:
     """Validate the Python version."""
     ok = sys.version_info >= (3, 10)
-    return ok, status_line(ok, "Python 3.10+", "Install Python 3.10 or higher from python.org/downloads")
+    return ok, status_line(
+        ok, "Python 3.10+", "Install Python 3.10 or higher from python.org/downloads"
+    )
 
 
 def check_binary(name: str, label: str, fix: str) -> tuple[bool, str]:
@@ -62,12 +64,27 @@ def collect_checks() -> list[dict[str, str | bool]]:
     ffmpeg_ok = find_ffmpeg()
     checks = [
         ("python", check_python()),
-        ("ffmpeg", (ffmpeg_ok, status_line(ffmpeg_ok, "ffmpeg binary", "Install FFmpeg and add it to PATH"))),
+        (
+            "ffmpeg",
+            (
+                ffmpeg_ok,
+                status_line(
+                    ffmpeg_ok, "ffmpeg binary", "Install FFmpeg and add it to PATH"
+                ),
+            ),
+        ),
         ("yt_dlp", check_module("yt_dlp", "yt-dlp", "Run: pip install yt-dlp")),
-        ("whisper", check_module("whisper", "whisper (openai)", "Run: pip install openai-whisper")),
+        (
+            "whisper",
+            check_module(
+                "whisper", "whisper (openai)", "Run: pip install openai-whisper"
+            ),
+        ),
         ("ollama", check_ollama()),
     ]
-    return [{"id": check_id, "ok": ok, "message": line} for check_id, (ok, line) in checks]
+    return [
+        {"id": check_id, "ok": ok, "message": line} for check_id, (ok, line) in checks
+    ]
 
 
 def main() -> int:

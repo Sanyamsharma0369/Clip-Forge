@@ -975,9 +975,9 @@
             <label>
               SOURCE URL OR LOCAL FILE PATH
               <span id="urlCount" style="opacity:0.4; font-weight:normal; margin-left:6px; font-size:11px;"></span>
-              <textarea 
-                id="source" 
-                rows="3" 
+              <textarea
+                id="source"
+                rows="3"
                 placeholder="Paste one URL per line for batch processing:&#10;https://youtube.com/watch?v=abc123&#10;https://youtube.com/watch?v=def456&#10;Or a local file path: D:\videos\clip.mp4"
                 style="width:100%; resize:vertical; font-size:13px; padding:10px; min-height:80px; margin-top:6px;"
               ></textarea>
@@ -1319,7 +1319,7 @@
       const noSceneSnap = $("fastModeToggle").checked;
       const faceTracking = $("faceTrackingToggle").checked;
       const subStyle = window.selectedSubStyle || 0;
-      
+
       const parts = [
         "python pipeline.py",
         shellQuote(source),
@@ -1336,7 +1336,7 @@
       if (noSceneSnap) parts.push("--no-scene-snap");
       if (!faceTracking) parts.push("--no-face-tracking");
       parts.push(`--subtitle-style ${subStyle}`);
-      
+
       $("commandBox").textContent = parts.join(" ");
       localStorage.setItem("clipforge-control-room", JSON.stringify({
         source,
@@ -1380,7 +1380,7 @@
       $("upscaleToggle").checked = Boolean(values.upscale);
       $("fastModeToggle").checked = Boolean(values.noSceneSnap);
       $("faceTrackingToggle").checked = values.faceTracking !== undefined ? Boolean(values.faceTracking) : true;
-      
+
       window.selectedSubStyle = values.subStyle || 0;
       document.querySelectorAll('.sub-style-btn').forEach(btn => {
         btn.classList.toggle('active', parseInt(btn.dataset.style) === window.selectedSubStyle);
@@ -1654,15 +1654,15 @@
               <span class="meta-chip">${escapeHtml(clip.video_name)}</span>
             </div>
             <p class="clip-hook">${escapeHtml(clip.hook || "No hook saved for this clip.")}</p>
-            
+
             ${(clip.hook_variants && clip.hook_variants.length) ? `
               <div class="hook-variants" style="margin-top:14px; border-top:1px solid rgba(255,255,255,0.06); padding-top:12px;">
                 <div style="font-size:10px; font-weight:700; opacity:0.4; letter-spacing:0.05em; margin-bottom:8px; text-transform:uppercase;">Caption Ideas</div>
                 <div style="display:flex; flex-direction:column; gap:6px;">
                   ${clip.hook_variants.map(v => `
-                    <div style="background:rgba(255,255,255,0.04); border-radius:8px; padding:8px 12px; font-size:12px; cursor:pointer; transition:background 0.2s" 
+                    <div style="background:rgba(255,255,255,0.04); border-radius:8px; padding:8px 12px; font-size:12px; cursor:pointer; transition:background 0.2s"
                          onclick="navigator.clipboard.writeText('${v.replace(/'/g, "\\'")}'); showToast('Caption copied!');"
-                         onmouseover="this.style.background='rgba(255,255,255,0.08)'" 
+                         onmouseover="this.style.background='rgba(255,255,255,0.08)'"
                          onmouseout="this.style.background='rgba(255,255,255,0.04)'">
                       📋 ${escapeHtml(v)}
                     </div>
@@ -2171,17 +2171,17 @@
       if (state.pollTimer) {
         clearTimeout(state.pollTimer);
       }
-      
+
       try {
         await refreshDashboard();
       } catch (err) {
         console.error("Polling error:", err);
       }
-      
+
       // Active job? 5s interval. Idle? 30s interval.
       const isActive = state.payload?.job?.active;
       const interval = isActive ? 5000 : 30000;
-      
+
       state.pollTimer = setTimeout(startPolling, interval);
     }
 

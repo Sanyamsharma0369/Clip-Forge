@@ -8,15 +8,15 @@ import json
 import logging
 import math
 import os
-import random
 import re
 import shutil
 import subprocess
 import sys
-if sys.stdout.encoding != 'utf-8':
-    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
-if sys.stderr.encoding != 'utf-8':
-    sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+
+if sys.stdout.encoding != "utf-8":
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if sys.stderr.encoding != "utf-8":
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 import textwrap
 import time
@@ -32,10 +32,10 @@ import requests
 CLIP_JSON_SCHEMA = {
     "type": "object",
     "properties": {
-        "title":  {"type": "string"},
-        "start":  {"type": "number"},
-        "end":    {"type": "number"},
-        "score":  {"type": "number"},
+        "title": {"type": "string"},
+        "start": {"type": "number"},
+        "end": {"type": "number"},
+        "score": {"type": "number"},
         "reason": {"type": "string"},
     },
     "required": ["title", "start", "end", "score", "reason"],
@@ -59,7 +59,11 @@ MIN_CLIP_SEC = 15
 MAX_CLIP_SEC = 90
 # ── Transcription segmentation ─────────────────────────────────────────────
 MAX_SEGMENT_DURATION: float = 15.0  # split segments longer than this (seconds)
-SEGMENT_OVERLAP_SEC:  float = 0.5   # overlap window between sub-segments
+SEGMENT_OVERLAP_SEC: float = 0.5  # overlap window between sub-segments
+VAD_PARAMETERS = {
+    "min_silence_duration_ms": 300,
+    "threshold": 0.4,
+}
 OUTPUT_DIR = Path("outputs/clips")
 TEMP_DIR = Path("temp")
 LOG_FILE = Path("pipeline.log")
@@ -79,8 +83,8 @@ SUBTITLE_STYLES = {
         "bold": True,
         "outline": 6,
         "shadow": 2,
-        "alignment": 2,         # bottom center
-        "margin_v": 120,        # push up from bottom edge
+        "alignment": 2,  # bottom center
+        "margin_v": 120,  # push up from bottom edge
     },
     1: {  # 🟡 TikTok Yellow
         "name": "TikTok Yellow",
@@ -107,8 +111,8 @@ SUBTITLE_STYLES = {
         "bold": False,
         "outline": 4,
         "shadow": 3,
-        "alignment": 2,         # bottom, not center screen
-        "margin_v": 180,        # higher up for storyteller feel
+        "alignment": 2,  # bottom, not center screen
+        "margin_v": 180,  # higher up for storyteller feel
     },
     3: {  # 💎 Neon Cyan
         "name": "Neon Cyan",
@@ -141,9 +145,9 @@ SUBTITLE_STYLES = {
 }
 
 # ── Clip padding constants ────────────────────────────────────────────────────
-CLIP_PAD_START = 1.5    # seconds before clip start (breathing room)
-CLIP_PAD_END   = 3.0    # seconds after clip end (catches cut-off sentences)
-AUDIO_LUFS_TARGET = -14 # YouTube/TikTok loudness standard
+CLIP_PAD_START = 1.5  # seconds before clip start (breathing room)
+CLIP_PAD_END = 3.0  # seconds after clip end (catches cut-off sentences)
+AUDIO_LUFS_TARGET = -14  # YouTube/TikTok loudness standard
 AUDIO_TRUE_PEAK = -1.5
 COLOR_CONTRAST = 1.05
 COLOR_SATURATION = 1.15
@@ -152,13 +156,13 @@ SHARPEN_STRENGTH = 0.8
 SCENE_THRESHOLD = 0.35  # 0.0–1.0, higher = fewer detected scenes
 
 # ── Face Tracking Constants ───────────────────────────────────────────────
-FACE_DETECT_EVERY_N_FRAMES = 15      # detect every 15 frames (~0.5s at 30fps)
-FACE_SMOOTH_WINDOW         = 30      # rolling average over 30 detections = smooth pan
-FACE_SCALE_FACTOR          = 1.1     # haarcascade detection sensitivity
-FACE_MIN_NEIGH_BORS        = 5       # higher = fewer false positives
-FACE_PADDING_TOP           = 0.20    # extra headroom above detected face (20%)
-FACE_PADDING_BOTTOM        = 0.10    # chin to bottom padding
-FACE_MIN_SIZE_RATIO        = 0.05    # minimum face size relative to frame width
+FACE_DETECT_EVERY_N_FRAMES = 15  # detect every 15 frames (~0.5s at 30fps)
+FACE_SMOOTH_WINDOW = 30  # rolling average over 30 detections = smooth pan
+FACE_SCALE_FACTOR = 1.1  # haarcascade detection sensitivity
+FACE_MIN_NEIGH_BORS = 5  # higher = fewer false positives
+FACE_PADDING_TOP = 0.20  # extra headroom above detected face (20%)
+FACE_PADDING_BOTTOM = 0.10  # chin to bottom padding
+FACE_MIN_SIZE_RATIO = 0.05  # minimum face size relative to frame width
 
 PROMPT_TEMPLATE = """\
 === EDITOR INSTRUCTIONS (HIGHEST PRIORITY) ===
@@ -321,7 +325,9 @@ def setup_logging() -> logging.Logger:
     LOGGER.setLevel(logging.DEBUG)
     formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
     stream_handler = logging.StreamHandler(sys.stdout)
-    stream_handler.stream = open(sys.stdout.fileno(), mode='w', encoding='utf-8', errors='replace', closefd=False)
+    stream_handler.stream = open(
+        sys.stdout.fileno(), mode="w", encoding="utf-8", errors="replace", closefd=False
+    )
     stream_handler.setLevel(logging.DEBUG)
     stream_handler.setFormatter(formatter)
     LOGGER.addHandler(stream_handler)
@@ -415,14 +421,21 @@ def ensure_ffmpeg_on_path() -> str:
     current_path = os.environ.get("PATH", "")
     parts = current_path.split(os.pathsep) if current_path else []
     if ffmpeg_dir not in parts:
-        os.environ["PATH"] = ffmpeg_dir + os.pathsep + current_path if current_path else ffmpeg_dir
+        os.environ["PATH"] = (
+            ffmpeg_dir + os.pathsep + current_path if current_path else ffmpeg_dir
+        )
     return ffmpeg_binary
 
 
 def get_video_duration(video_path: Path) -> float:
     """Return video duration in seconds via ffprobe."""
     ffmpeg_bin = find_ffmpeg_binary()
-    ffprobe_bin = str(ffmpeg_bin).lower().replace("ffmpeg.exe", "ffprobe.exe").replace("ffmpeg", "ffprobe")
+    ffprobe_bin = (
+        str(ffmpeg_bin)
+        .lower()
+        .replace("ffmpeg.exe", "ffprobe.exe")
+        .replace("ffmpeg", "ffprobe")
+    )
     # Restore original case for the path but fixed binary name
     if ffmpeg_bin.lower().endswith("ffmpeg.exe"):
         ffprobe_bin = ffmpeg_bin[:-10] + "ffprobe.exe"
@@ -431,9 +444,12 @@ def get_video_duration(video_path: Path) -> float:
 
     cmd = [
         ffprobe_bin,
-        "-v", "quiet",
-        "-print_format", "json",
-        "-show_format", str(video_path)
+        "-v",
+        "quiet",
+        "-print_format",
+        "json",
+        "-show_format",
+        str(video_path),
     ]
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
@@ -451,11 +467,19 @@ def snap_to_scene_cut(video_path: Path, timestamp: float, window: float = 1.5) -
 
     cmd = [
         ffmpeg_bin,
-        "-ss", str(scan_start),        # seek to clip region
-        "-t",  str(scan_duration),     # scan only small window
-        "-i", str(video_path),
-        "-vf", f"select='gt(scene,{SCENE_THRESHOLD})',showinfo",
-        "-vsync", "0", "-f", "null", "-"
+        "-ss",
+        str(scan_start),  # seek to clip region
+        "-t",
+        str(scan_duration),  # scan only small window
+        "-i",
+        str(video_path),
+        "-vf",
+        f"select='gt(scene,{SCENE_THRESHOLD})',showinfo",
+        "-vsync",
+        "0",
+        "-f",
+        "null",
+        "-",
     ]
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
@@ -467,7 +491,7 @@ def snap_to_scene_cut(video_path: Path, timestamp: float, window: float = 1.5) -
                     scene_times.append(t + scan_start)
                 except (ValueError, IndexError):
                     continue
-                    
+
         # Find nearest scene cut within window
         candidates = [t for t in scene_times if abs(t - timestamp) <= window]
         if candidates:
@@ -611,7 +635,9 @@ def detect_encoder(prefer_quality: bool = True) -> tuple[str, list[str]]:
     return _cpu_encoder()
 
 
-def run_command(command: list[str], timeout: int | None = None) -> subprocess.CompletedProcess[str]:
+def run_command(
+    command: list[str], timeout: int | None = None
+) -> subprocess.CompletedProcess[str]:
     """Run a subprocess with readable error handling."""
     try:
         return subprocess.run(
@@ -627,7 +653,9 @@ def run_command(command: list[str], timeout: int | None = None) -> subprocess.Co
         stderr = exc.stderr.strip() or exc.stdout.strip() or "Unknown subprocess error."
         raise PipelineError(stderr) from exc
     except subprocess.TimeoutExpired as exc:
-        raise PipelineError(f"Command timed out after {timeout} seconds: {' '.join(command)}") from exc
+        raise PipelineError(
+            f"Command timed out after {timeout} seconds: {' '.join(command)}"
+        ) from exc
 
 
 def get_video(source: str, job_id: str = "") -> Path:
@@ -651,10 +679,18 @@ def get_video(source: str, job_id: str = "") -> Path:
             pct = str(data.get("_percent_str", "?")).strip()
             speed = str(data.get("_speed_str", "?")).strip()
             eta = str(data.get("_eta_str", "?")).strip()
-            log_progress("download", f"{pct} @ {speed} ETA {eta}", message=f"Download progress: {pct} speed: {speed} ETA: {eta}")
+            log_progress(
+                "download",
+                f"{pct} @ {speed} ETA {eta}",
+                message=f"Download progress: {pct} speed: {speed} ETA: {eta}",
+            )
         elif status == "finished":
             filename = str(data.get("filename", "")).strip()
-            log_progress("download", "100% complete", message=f"Download finished: {filename or output_path.name}")
+            log_progress(
+                "download",
+                "100% complete",
+                message=f"Download finished: {filename or output_path.name}",
+            )
 
     try:
         import yt_dlp
@@ -684,7 +720,9 @@ def get_video(source: str, job_id: str = "") -> Path:
                     time.sleep(1)
     except PipelineError as exc:
         LOGGER.error("yt-dlp failed: %s", exc)
-        raise PipelineError(f"yt-dlp failed: {exc}\nSuggestion: pip install -U yt-dlp") from exc
+        raise PipelineError(
+            f"yt-dlp failed: {exc}\nSuggestion: pip install -U yt-dlp"
+        ) from exc
     except FileNotFoundError as exc:
         raise PipelineError("Missing command: yt-dlp") from exc
     except Exception as exc:
@@ -693,17 +731,27 @@ def get_video(source: str, job_id: str = "") -> Path:
             for _ in range(5):
                 try:
                     temp_output_path.replace(output_path)
-                    LOGGER.warning("yt-dlp rename failed, but recovered completed download: %s", output_path)
+                    LOGGER.warning(
+                        "yt-dlp rename failed, but recovered completed download: %s",
+                        output_path,
+                    )
                     return output_path.resolve()
                 except OSError:
                     time.sleep(1)
-            LOGGER.warning("yt-dlp rename failed; using completed temp video directly: %s", temp_output_path)
+            LOGGER.warning(
+                "yt-dlp rename failed; using completed temp video directly: %s",
+                temp_output_path,
+            )
             return temp_output_path.resolve()
         if output_path.exists():
-            LOGGER.warning("yt-dlp reported failure, but output video exists: %s", output_path)
+            LOGGER.warning(
+                "yt-dlp reported failure, but output video exists: %s", output_path
+            )
             return output_path.resolve()
         LOGGER.error("yt-dlp failed: %s", stderr)
-        raise PipelineError(f"yt-dlp failed: {stderr}\nSuggestion: pip install -U yt-dlp") from exc
+        raise PipelineError(
+            f"yt-dlp failed: {stderr}\nSuggestion: pip install -U yt-dlp"
+        ) from exc
     if not output_path.exists():
         raise PipelineError("yt-dlp completed without producing a video file.")
     return output_path.resolve()
@@ -778,7 +826,9 @@ def _normalize_segments(
     return normalized
 
 
-def _collect_transcript_segments(raw_segments: Any, info: Any) -> tuple[list[dict[str, Any]], str]:
+def _collect_transcript_segments(
+    raw_segments: Any, info: Any
+) -> tuple[list[dict[str, Any]], str]:
     """Consume faster-whisper's generator while emitting periodic progress."""
     segments_raw: list[dict[str, Any]] = []
     text_parts: list[str] = []
@@ -840,7 +890,9 @@ def _transcribe_in_process(video_path: Path, model_name: str) -> dict[str, Any]:
     try:
         from faster_whisper import WhisperModel
     except ImportError as exc:
-        raise PipelineError("faster-whisper is not installed. Run: pip install faster-whisper") from exc
+        raise PipelineError(
+            "faster-whisper is not installed. Run: pip install faster-whisper"
+        ) from exc
 
     device = "cuda" if GPUOrchestrator.cuda_available() else "cpu"
     compute_type = "float16" if device == "cuda" else "float32"
@@ -852,14 +904,14 @@ def _transcribe_in_process(video_path: Path, model_name: str) -> dict[str, Any]:
         word_timestamps=True,
         beam_size=5,
         vad_filter=True,
-        vad_parameters={
-            "min_silence_duration_ms": 300,
-            "threshold": 0.4,
-        },
+        vad_parameters=VAD_PARAMETERS,
     )
 
-    LOGGER.info("  Detected language: %s (%.0f%% confidence)", 
-        info.language, info.language_probability * 100)
+    LOGGER.info(
+        "  Detected language: %s (%.0f%% confidence)",
+        info.language,
+        info.language_probability * 100,
+    )
 
     segments, text = _collect_transcript_segments(raw_segments, info)
     return {
@@ -869,13 +921,17 @@ def _transcribe_in_process(video_path: Path, model_name: str) -> dict[str, Any]:
     }
 
 
-def _transcribe_worker_to_file(video_path: Path, model_name: str, output_path: Path) -> None:
+def _transcribe_worker_to_file(
+    video_path: Path, model_name: str, output_path: Path
+) -> None:
     """Transcribe and persist output before hard-exiting the worker process."""
     ensure_ffmpeg_on_path()
     try:
         from faster_whisper import WhisperModel
     except ImportError as exc:
-        raise PipelineError("faster-whisper is not installed. Run: pip install faster-whisper") from exc
+        raise PipelineError(
+            "faster-whisper is not installed. Run: pip install faster-whisper"
+        ) from exc
 
     device = "cuda" if GPUOrchestrator.cuda_available() else "cpu"
     compute_type = "float16" if device == "cuda" else "float32"
@@ -887,14 +943,14 @@ def _transcribe_worker_to_file(video_path: Path, model_name: str, output_path: P
         word_timestamps=True,
         beam_size=5,
         vad_filter=True,
-        vad_parameters={
-            "min_silence_duration_ms": 500,
-            "threshold": 0.35,
-        },
+        vad_parameters=VAD_PARAMETERS,
     )
 
-    LOGGER.info("  Detected language: %s (%.0f%% confidence)", 
-        info.language, info.language_probability * 100)
+    LOGGER.info(
+        "  Detected language: %s (%.0f%% confidence)",
+        info.language,
+        info.language_probability * 100,
+    )
 
     segments, text = _collect_transcript_segments(raw_segments, info)
     transcript = {
@@ -938,16 +994,25 @@ def transcribe(video_path: Path, model_name: str | None = None) -> dict[str, Any
         result = subprocess.run(command, text=True, timeout=7200)
         if worker_output.exists():
             if result.returncode != 0:
-                LOGGER.warning("Transcription worker exited with code %s after writing output.", result.returncode)
+                LOGGER.warning(
+                    "Transcription worker exited with code %s after writing output.",
+                    result.returncode,
+                )
             return json.loads(worker_output.read_text(encoding="utf-8"))
         if result.returncode != 0:
-            raise PipelineError(f"Transcription worker failed with exit code {result.returncode}.")
+            raise PipelineError(
+                f"Transcription worker failed with exit code {result.returncode}."
+            )
         raise PipelineError("Transcription worker completed without producing output.")
     except subprocess.TimeoutExpired as exc:
-        raise PipelineError("Transcription worker timed out after 7200 seconds.") from exc
+        raise PipelineError(
+            "Transcription worker timed out after 7200 seconds."
+        ) from exc
     finally:
         if not remove_path_with_retries(worker_output, attempts=8, delay_sec=1.0):
-            LOGGER.warning("Could not remove transcription worker output: %s", worker_output)
+            LOGGER.warning(
+                "Could not remove transcription worker output: %s", worker_output
+            )
 
 
 def chunk_transcript(segments: list[dict[str, Any]], limit: int = 1400) -> list[str]:
@@ -971,7 +1036,10 @@ def chunk_transcript(segments: list[dict[str, Any]], limit: int = 1400) -> list[
                 piece_start = start + index * step
                 piece_end = min(end, piece_start + step)
                 piece_line = f"[{piece_start:.1f}s -> {piece_end:.1f}s] {piece}"
-                if current_lines and current_tokens + estimate_tokens(piece_line) > limit:
+                if (
+                    current_lines
+                    and current_tokens + estimate_tokens(piece_line) > limit
+                ):
                     chunks.append("\n".join(current_lines))
                     current_lines = []
                     current_tokens = 0
@@ -984,6 +1052,7 @@ def chunk_transcript(segments: list[dict[str, Any]], limit: int = 1400) -> list[
         chunks.append("\n".join(current_lines))
     return chunks
 
+
 def build_prompt(
     transcript: str,
     min_sec: int,
@@ -993,8 +1062,11 @@ def build_prompt(
     custom_instruction: str = "",
 ) -> str:
     """Render the clip-selection prompt for one transcript chunk."""
-    instruction = custom_instruction.strip() if custom_instruction.strip() else \
-        "Find the most engaging, emotionally resonant moments with strong hooks."
+    instruction = (
+        custom_instruction.strip()
+        if custom_instruction.strip()
+        else "Find the most engaging, emotionally resonant moments with strong hooks."
+    )
     return PROMPT_TEMPLATE.format(
         custom_instruction=instruction,
         min_clips=min_clips,
@@ -1008,7 +1080,9 @@ def build_prompt(
 def post_json(url: str, payload: dict[str, Any], timeout: int) -> dict[str, Any]:
     """POST JSON and parse the JSON response."""
     data = json.dumps(payload).encode("utf-8")
-    req = request.Request(url, data=data, headers={"Content-Type": "application/json"}, method="POST")
+    req = request.Request(
+        url, data=data, headers={"Content-Type": "application/json"}, method="POST"
+    )
     try:
         with request.urlopen(req, timeout=timeout) as response:
             return json.loads(response.read().decode("utf-8"))
@@ -1022,20 +1096,20 @@ def call_ollama(
     prompt: str,
     model: str = OLLAMA_MODEL,
     timeout: int = 120,
-    use_schema: bool = False,       # ← OFF by default, ON only for clip analysis
+    use_schema: bool = False,  # ← OFF by default, ON only for clip analysis
 ) -> str:
     """
     Call Ollama API. When use_schema=True, injects CLIP_LIST_JSON_SCHEMA
     into the format field — guarantees valid JSON on Ollama >= 0.1.47.
     Falls back to plain text on older versions.
     """
-    url     = "http://localhost:11434/api/generate"
+    url = "http://localhost:11434/api/generate"
     payload = {
-        "model":  model,
+        "model": model,
         "prompt": prompt,
         "stream": False,
         "options": {
-            "temperature": 0.3,     # lower = more consistent JSON
+            "temperature": 0.3,  # lower = more consistent JSON
             "num_predict": 2048,
         },
     }
@@ -1052,9 +1126,7 @@ def call_ollama(
         data = resp.json()
         return data.get("response", "")
     except requests.exceptions.ConnectionError:
-        raise PipelineError(
-            "Ollama is not running. Start it with: ollama serve"
-        )
+        raise PipelineError("Ollama is not running. Start it with: ollama serve")
     except requests.exceptions.Timeout:
         raise PipelineError(
             f"Ollama timed out after {timeout}s. "
@@ -1097,25 +1169,25 @@ def call_gemini(
                         "items": {
                             "type": "OBJECT",
                             "properties": {
-                                "title":  {"type": "STRING"},
-                                "start":  {"type": "NUMBER"},
-                                "end":    {"type": "NUMBER"},
-                                "score":  {"type": "NUMBER"},
+                                "title": {"type": "STRING"},
+                                "start": {"type": "NUMBER"},
+                                "end": {"type": "NUMBER"},
+                                "score": {"type": "NUMBER"},
                                 "reason": {"type": "STRING"},
                             },
                             "required": ["title", "start", "end", "score", "reason"],
-                        }
+                        },
                     }
                 },
                 "required": ["clips"],
-            }
+            },
         )
     else:
         # Plain text for chapters
         generation_config = genai.GenerationConfig(temperature=0.3)
 
     model_name = "gemini-1.5-flash"
-    model_obj  = genai.GenerativeModel(
+    model_obj = genai.GenerativeModel(
         model_name,
         generation_config=generation_config,
     )
@@ -1180,12 +1252,13 @@ def parse_llm_json(text: str) -> list[dict]:
         candidates, depth, start = [], 0, -1
         for i, ch in enumerate(s):
             if ch == "[":
-                if depth == 0: start = i
+                if depth == 0:
+                    start = i
                 depth += 1
             elif ch == "]":
                 depth -= 1
                 if depth == 0 and start != -1:
-                    candidates.append(s[start:i + 1])
+                    candidates.append(s[start : i + 1])
                     start = -1
         return candidates
 
@@ -1201,9 +1274,9 @@ def parse_llm_json(text: str) -> list[dict]:
     # ── Step 5: Repair truncated JSON ────────────────────────────────────────
     idx = cleaned.find("[")
     if idx != -1:
-        partial      = cleaned[idx:]
-        open_braces  = partial.count("{") - partial.count("}")
-        repaired     = partial + ("}" * max(0, open_braces)) + "]"
+        partial = cleaned[idx:]
+        open_braces = partial.count("{") - partial.count("}")
+        repaired = partial + ("}" * max(0, open_braces)) + "]"
         try:
             result = json.loads(repaired)
             if isinstance(result, list):
@@ -1224,9 +1297,9 @@ def normalize_clip(clip: dict, segments: list[dict] = None) -> dict:
     """Ensure clip has 'start' and 'end' float keys, handling common variants."""
     c = dict(clip)
     s = c.get("start") if c.get("start") is not None else c.get("start_time", 0)
-    e = c.get("end")   if c.get("end")   is not None else c.get("end_time", 0)
+    e = c.get("end") if c.get("end") is not None else c.get("end_time", 0)
     c["start"] = float(s)
-    c["end"]   = float(e)
+    c["end"] = float(e)
     return c
 
 
@@ -1245,20 +1318,23 @@ def snap_to_sentence_end(
 
     for seg in segments:
         seg_start = float(seg.get("start", 0))
-        seg_end   = float(seg.get("end",   0))
+        seg_end = float(seg.get("end", 0))
 
         if seg_start <= timestamp < seg_end:
             overshoot = seg_end - timestamp
             if overshoot <= max_extend:
                 LOGGER.debug(
                     "  Sentence snap: %.2fs -> %.2fs (+%.2fs to complete speech segment)",
-                    timestamp, seg_end, overshoot,
+                    timestamp,
+                    seg_end,
+                    overshoot,
                 )
                 return seg_end
             else:
                 LOGGER.debug(
                     "  Sentence snap: skipped (overshoot %.2fs > max %.2fs)",
-                    overshoot, max_extend,
+                    overshoot,
+                    max_extend,
                 )
             break
 
@@ -1283,8 +1359,8 @@ def fix_sentence_boundary(
 
     for seg in segments:
         seg_start = float(seg.get("start", 0))
-        seg_end   = float(seg.get("end",   0))
-        seg_text  = seg.get("text", "").strip()
+        seg_end = float(seg.get("end", 0))
+        seg_text = seg.get("text", "").strip()
 
         if seg_start <= end < seg_end:
             # Check if the segment ends with sentence-terminal punctuation
@@ -1295,21 +1371,24 @@ def fix_sentence_boundary(
             if not ends_cleanly:
                 extension = seg_end - end
                 if extension <= max_extend:
-                    new_end = min(video_duration, seg_end + 0.5)   # 0.5s grace
-                    fixed   = dict(clip)
+                    new_end = min(video_duration, seg_end + 0.5)  # 0.5s grace
+                    fixed = dict(clip)
                     fixed["end"] = new_end
                     LOGGER.info(
                         "  Sentence fix: '%s' %.2fs->%.2fs "
                         "(mid-sentence cut fixed, last words: '...%s')",
                         clip.get("title", "untitled")[:40],
-                        end, new_end,
+                        end,
+                        new_end,
                         seg_text[-40:],
                     )
                     return fixed
                 else:
                     LOGGER.debug(
                         "  Sentence fix: skipped '%s' (extension %.2fs > max %.2fs)",
-                        clip.get("title", "")[:30], extension, max_extend,
+                        clip.get("title", "")[:30],
+                        extension,
+                        max_extend,
                     )
             break
 
@@ -1328,22 +1407,26 @@ def expand_clip_to_minimum(
     Returns the modified clip (does not mutate original).
     """
     # Defensive key check
-    start = clip.get("start") if clip.get("start") is not None else clip.get("start_time", 0)
-    end   = clip.get("end")   if clip.get("end")   is not None else clip.get("end_time", 0)
-    
+    start = (
+        clip.get("start")
+        if clip.get("start") is not None
+        else clip.get("start_time", 0)
+    )
+    end = clip.get("end") if clip.get("end") is not None else clip.get("end_time", 0)
+
     start = float(start)
-    end   = float(end)
+    end = float(end)
     duration = end - start
 
     if duration >= min_sec:
-        return clip   # already valid, no change
+        return clip  # already valid, no change
 
     # How much do we need to add?
     deficit = min_sec - duration
     pad_each_side = deficit / 2.0
 
     new_start = max(0.0, start - pad_each_side)
-    new_end   = min(video_duration, end + pad_each_side)
+    new_end = min(video_duration, end + pad_each_side)
 
     # If we hit a boundary, compensate on the other side
     if new_start == 0.0:
@@ -1357,13 +1440,15 @@ def expand_clip_to_minimum(
 
     expanded = dict(clip)
     expanded["start"] = round(new_start, 2)
-    expanded["end"]   = round(new_end, 2)
+    expanded["end"] = round(new_end, 2)
 
     LOGGER.info(
         "  Auto-expanded clip '%s': %.1fs->%.1fs (was %.1fs, now %.1fs)",
         clip.get("title", "untitled"),
-        start, end,
-        duration, new_end - new_start,
+        start,
+        end,
+        duration,
+        new_end - new_start,
     )
     return expanded
 
@@ -1380,8 +1465,10 @@ def validate_clip(
     [min_sec, max_sec] are hard-rejected, not silently trimmed.
     """
     # ── Map flexible keys ──────────────────────────────────────────────────
-    start = clip.get("start") if clip.get("start") is not None else clip.get("start_time")
-    end   = clip.get("end")   if clip.get("end")   is not None else clip.get("end_time")
+    start = (
+        clip.get("start") if clip.get("start") is not None else clip.get("start_time")
+    )
+    end = clip.get("end") if clip.get("end") is not None else clip.get("end_time")
 
     # ── Type checks ──────────────────────────────────────────────────────────
     if not isinstance(start, (int, float)) or not isinstance(end, (int, float)):
@@ -1410,7 +1497,7 @@ def validate_clip(
     # ── Video bounds ─────────────────────────────────────────────────────────
     if start < 0:
         return False, f"start ({start:.1f}s) is negative"
-    if end > video_duration + 1.0:   # 1s tolerance for float rounding
+    if end > video_duration + 1.0:  # 1s tolerance for float rounding
         return False, f"end ({end:.1f}s) exceeds video duration ({video_duration:.1f}s)"
 
     # ── Required fields ──────────────────────────────────────────────────────
@@ -1422,14 +1509,21 @@ def validate_clip(
 
 def overlap_ratio(first: dict[str, Any], second: dict[str, Any]) -> float:
     """Compute overlap as a fraction of the shorter clip."""
-    overlap = max(0.0, min(first["end"], second["end"]) - max(first["start"], second["start"]))
+    overlap = max(
+        0.0, min(first["end"], second["end"]) - max(first["start"], second["start"])
+    )
     shorter = min(first["end"] - first["start"], second["end"] - second["start"])
     return overlap / shorter if shorter else 0.0
 
 
 def clip_score(clip: dict[str, Any]) -> float:
     """Rank clips by descriptive richness and duration."""
-    return len(clip.get("hook", "")) + len(clip.get("reason", "")) + len(clip.get("title", "")) * 2 + (clip["end"] - clip["start"])
+    return (
+        len(clip.get("hook", ""))
+        + len(clip.get("reason", ""))
+        + len(clip.get("title", "")) * 2
+        + (clip["end"] - clip["start"])
+    )
 
 
 def deduplicate_clips(clips: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
@@ -1459,7 +1553,9 @@ def deduplicate_clips(clips: list[dict[str, Any]], limit: int) -> list[dict[str,
     return sorted(selected, key=lambda item: item["start"])
 
 
-def generate_srt(segments: list[dict[str, Any]], start_sec: float, end_sec: float, out_path: Path) -> Path:
+def generate_srt(
+    segments: list[dict[str, Any]], start_sec: float, end_sec: float, out_path: Path
+) -> Path:
     """Create an SRT file for the clip window."""
     captions: list[str] = []
     caption_index = 1
@@ -1471,7 +1567,16 @@ def generate_srt(segments: list[dict[str, Any]], start_sec: float, end_sec: floa
         start = max(0.0, seg_start - start_sec)
         end = max(start + 0.05, min(end_sec, seg_end) - start_sec)
         text = "\n".join(textwrap.wrap(str(segment["text"]).strip(), width=42)) or "..."
-        captions.append("\n".join([str(caption_index), f"{sec_to_srt_ts(start)} --> {sec_to_srt_ts(end)}", text, ""]))
+        captions.append(
+            "\n".join(
+                [
+                    str(caption_index),
+                    f"{sec_to_srt_ts(start)} --> {sec_to_srt_ts(end)}",
+                    text,
+                    "",
+                ]
+            )
+        )
         caption_index += 1
     out_path.write_text("\n".join(captions), encoding="utf-8")
     return out_path
@@ -1494,7 +1599,9 @@ def export_srt(
         ms = int((seconds % 1) * 1000)
         return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
 
-    clip_segs = [s for s in segments if s["end"] >= clip_start and s["start"] <= clip_end]
+    clip_segs = [
+        s for s in segments if s["end"] >= clip_start and s["start"] <= clip_end
+    ]
     if not clip_segs:
         return None
 
@@ -1520,10 +1627,12 @@ def generate_chapters(
     NEVER uses JSON schema — plain text output only.
     """
     transcript_sample = ""
-    for s in segments[:100]:   # first ~10-15 mins
+    for s in segments[:100]:  # first ~10-15 mins
         mins = int(s["start"] // 60)
         secs = int(s["start"] % 60)
-        transcript_sample += f"[{mins:02d}:{secs:02d}] {str(s.get('text', '')).strip()}\n"
+        transcript_sample += (
+            f"[{mins:02d}:{secs:02d}] {str(s.get('text', '')).strip()}\n"
+        )
 
     chapter_prompt = f"""Analyze this timestamped transcript and generate YouTube chapter markers.
 Return ONLY a plain text list in this exact format — no JSON, no bullets:
@@ -1572,7 +1681,7 @@ def seconds_to_ass_time(seconds: float) -> str:
     h = int(seconds // 3600)
     m = int((seconds % 3600) // 60)
     s = int(seconds % 60)
-    cs = int((seconds % 1) * 100)   # centiseconds
+    cs = int((seconds % 1) * 100)  # centiseconds
     return f"{h}:{m:02d}:{s:02d}.{cs:02d}"
 
 
@@ -1624,7 +1733,9 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
         # Group words into lines of max 3 words for readability
         line_size = 3
-        word_groups = [words[i : i + line_size] for i in range(0, len(words), line_size)]
+        word_groups = [
+            words[i : i + line_size] for i in range(0, len(words), line_size)
+        ]
 
         for group in word_groups:
             if not group:
@@ -1656,7 +1767,9 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
     ass_content = ass_header + "\n".join(events)
     output_path.write_text(ass_content, encoding="utf-8")
-    LOGGER.info("  ASS subtitles written: %s (%d events)", output_path.name, len(events))
+    LOGGER.info(
+        "  ASS subtitles written: %s (%d events)", output_path.name, len(events)
+    )
     return output_path
 
 
@@ -1688,7 +1801,12 @@ def extract_thumbnail(clip_path: Path) -> Path | None:
 def get_video_dimensions(video_path: Path) -> tuple[int, int]:
     """Return (width, height) of video via ffprobe."""
     ffmpeg_bin = find_ffmpeg_binary()
-    ffprobe_bin = str(ffmpeg_bin).lower().replace("ffmpeg.exe", "ffprobe.exe").replace("ffmpeg", "ffprobe")
+    ffprobe_bin = (
+        str(ffmpeg_bin)
+        .lower()
+        .replace("ffmpeg.exe", "ffprobe.exe")
+        .replace("ffmpeg", "ffprobe")
+    )
     if ffmpeg_bin.lower().endswith("ffmpeg.exe"):
         ffprobe_bin = ffmpeg_bin[:-10] + "ffprobe.exe"
     elif ffmpeg_bin.lower().endswith("ffmpeg"):
@@ -1696,14 +1814,16 @@ def get_video_dimensions(video_path: Path) -> tuple[int, int]:
 
     cmd = [
         ffprobe_bin,
-        "-v", "quiet",
-        "-print_format", "json",
+        "-v",
+        "quiet",
+        "-print_format",
+        "json",
         "-show_streams",
         str(video_path),
     ]
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
-        data   = json.loads(result.stdout)
+        data = json.loads(result.stdout)
         for stream in data.get("streams", []):
             if stream.get("codec_type") == "video":
                 return int(stream["width"]), int(stream["height"])
@@ -1733,9 +1853,9 @@ def detect_face_centers(
         LOGGER.warning("Face tracking: could not open video, using center crop.")
         return []
 
-    fps          = cap.get(cv2.CAP_PROP_FPS) or 30.0
+    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
     total_frames = int((end_time - start_time) * fps)
-    start_frame  = int(start_time * fps)
+    start_frame = int(start_time * fps)
 
     cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
 
@@ -1748,7 +1868,8 @@ def detect_face_centers(
 
     LOGGER.info(
         "  Face tracking: analyzing %d frames (every %d)...",
-        total_frames, FACE_DETECT_EVERY_N_FRAMES
+        total_frames,
+        FACE_DETECT_EVERY_N_FRAMES,
     )
 
     while frame_idx < total_frames:
@@ -1790,12 +1911,13 @@ def detect_face_centers(
         frame_idx += 1
 
     cap.release()
-    
+
     detected_count = sum(1 for c in frame_centers if c != (0.5, 0.35))
     LOGGER.info(
         "  Face tracking result: %d/%d frames had detected faces (%.0f%%)",
-        detected_count, len(frame_centers),
-        100 * detected_count / max(1, len(frame_centers))
+        detected_count,
+        len(frame_centers),
+        100 * detected_count / max(1, len(frame_centers)),
     )
 
     LOGGER.info(
@@ -1839,7 +1961,9 @@ def build_face_crop_filter(
         crop_x = int(avg_cx * source_width - crop_w / 2)
         crop_x = max(0, min(source_width - crop_w, crop_x))
 
-        LOGGER.info("  Static shot detected (std=%.3f), single crop at x=%d", x_std, crop_x)
+        LOGGER.info(
+            "  Static shot detected (std=%.3f), single crop at x=%d", x_std, crop_x
+        )
         return f"crop={crop_w}:{crop_h}:{crop_x}:0,scale={output_width}:{output_height}"
 
     else:
@@ -1853,7 +1977,9 @@ def build_face_crop_filter(
         crop_x = int(avg_cx * source_width - crop_w / 2)
         crop_x = max(0, min(source_width - crop_w, crop_x))
 
-        LOGGER.info("  Dynamic shot detected (std=%.3f), tracking crop at x=%d", x_std, crop_x)
+        LOGGER.info(
+            "  Dynamic shot detected (std=%.3f), tracking crop at x=%d", x_std, crop_x
+        )
         return (
             f"crop={crop_w}:{source_height}:"
             f"'min(max(0,{crop_x}+{source_width}*(x/{source_width}-{avg_cx:.3f})*0.3),"
@@ -1878,11 +2004,11 @@ def cut_and_format_clip(
     video_duration = get_video_duration(video_path)
 
     raw_start = clip["start"]
-    raw_end   = clip["end"]
+    raw_end = clip["end"]
 
     # ── Apply padding ─────────────────────────────────────────────────────────
     start = max(0.0, raw_start - CLIP_PAD_START)
-    end   = min(video_duration, raw_end + CLIP_PAD_END)
+    end = min(video_duration, raw_end + CLIP_PAD_END)
 
     # ── Snap end to sentence boundary FIRST (before scene snap) ───────────────
     if segments:
@@ -1899,10 +2025,11 @@ def cut_and_format_clip(
         LOGGER.warning(
             "  cut_and_format_clip: end (%.2fs) <= start (%.2fs) after snapping — "
             "reverting to padded timestamps",
-            end, start,
+            end,
+            start,
         )
         start = max(0.0, raw_start - CLIP_PAD_START)
-        end   = min(video_duration, raw_end + CLIP_PAD_END)
+        end = min(video_duration, raw_end + CLIP_PAD_END)
 
     duration = end - start
     ffmpeg_binary = ensure_ffmpeg_on_path()
@@ -1997,7 +2124,9 @@ def cut_and_format_clip(
     try:
         run_command(command, timeout=3600)
     except PipelineError as exc:
-        LOGGER.error("FFmpeg failed for clip '%s': %s", clip.get("title", "untitled"), exc)
+        LOGGER.error(
+            "FFmpeg failed for clip '%s': %s", clip.get("title", "untitled"), exc
+        )
         raise
     finally:
         # Clean up .ass file after burning
@@ -2028,17 +2157,21 @@ def upscale_with_esrgan(clip_path: Path) -> Path:
     if not esrgan_exe:
         LOGGER.warning("Real-ESRGAN not found on PATH, skipping upscale.")
         return clip_path
-        
+
     LOGGER.info("  Starting 2x ESRGAN upscale for: %s", clip_path.name)
     try:
         cmd = [
             esrgan_exe,
-            "-i", str(clip_path),
-            "-o", str(upscaled_path),
-            "-s", "2",
-            "-n", GPUOrchestrator.REALESRGAN_MODEL,
+            "-i",
+            str(clip_path),
+            "-o",
+            str(upscaled_path),
+            "-s",
+            "2",
+            "-n",
+            GPUOrchestrator.REALESRGAN_MODEL,
         ]
-        run_command(cmd, timeout=1200) # ESRGAN can be slow
+        run_command(cmd, timeout=1200)  # ESRGAN can be slow
         LOGGER.info("  Upscale complete: %s", upscaled_path.name)
         return upscaled_path
     except PipelineError as exc:
@@ -2087,7 +2220,11 @@ def analyze_chunks(
             LOGGER.info("  EDITOR INSTRUCTIONS CONNECTED: %s", headers[1].strip())
             LOGGER.info("  %s", headers[2].strip()[:300].replace("\n", " ") + "...")
 
-    llm_fn = (lambda p: call_gemini(p, use_schema=True)) if use_gemini else (lambda p: call_ollama(p, model=model, use_schema=True))
+    llm_fn = (
+        (lambda p: call_gemini(p, use_schema=True))
+        if use_gemini
+        else (lambda p: call_ollama(p, model=model, use_schema=True))
+    )
 
     # ── LLM call with retry ───────────────────────────────────────────────────
     MAX_ATTEMPTS = 3
@@ -2095,12 +2232,12 @@ def analyze_chunks(
     # Retry prompts — focus on CONTENT quality, not JSON format
     # Schema handles the format; these guide the model toward better clips
     RETRY_SUFFIXES = [
-        "",    # attempt 1 — schema handles format
+        "",  # attempt 1 — schema handles format
         "\n\nREMINDER: Combine multiple transcript lines into 30-90 second scenes. "
-               "Do NOT use individual sentence timestamps.",
+        "Do NOT use individual sentence timestamps.",
         "\n\nCRITICAL: Each clip needs start and end at least 30 seconds apart. "
-               "Example: start=120.0, end=165.0 is correct (45s). "
-               "start=120.0, end=123.0 is WRONG (3s).",
+        "Example: start=120.0, end=165.0 is correct (45s). "
+        "start=120.0, end=123.0 is WRONG (3s).",
     ]
 
     raw_clips: list[dict] = []
@@ -2116,7 +2253,9 @@ def analyze_chunks(
             response_text = llm_fn(current_prompt)
 
             # Log raw response preview for debugging
-            preview = response_text[:200].replace("\n", " ") if response_text else "<empty>"
+            preview = (
+                response_text[:200].replace("\n", " ") if response_text else "<empty>"
+            )
             LOGGER.debug("  LLM raw response preview: %s", preview)
 
             if debug_llm:
@@ -2127,13 +2266,15 @@ def analyze_chunks(
                 if all(isinstance(c, dict) for c in parsed):
                     raw_clips = parsed
                     LOGGER.info(
-                        "  LLM returned %d clip suggestions on attempt %d.", len(parsed), attempt
+                        "  LLM returned %d clip suggestions on attempt %d.",
+                        len(parsed),
+                        attempt,
                     )
                     break
                 else:
                     LOGGER.warning(
                         "  LLM returned list of invalid types (expected dicts) on attempt %d, retrying...",
-                        attempt
+                        attempt,
                     )
                     last_error = "LLM returned non-object items in array"
             else:
@@ -2145,9 +2286,7 @@ def analyze_chunks(
         except PipelineError as exc:
             last_error = str(exc)
             # Log the first 300 chars of raw output for diagnostics
-            LOGGER.warning(
-                "  LLM attempt %d failed: %s", attempt, str(exc)[:300]
-            )
+            LOGGER.warning("  LLM attempt %d failed: %s", attempt, str(exc)[:300])
             if attempt == MAX_ATTEMPTS:
                 raise PipelineError(
                     f"LLM failed after {MAX_ATTEMPTS} attempts. Last error: {last_error}\n"
@@ -2155,7 +2294,7 @@ def analyze_chunks(
                 ) from exc
 
     # ── Validate each clip — strict duration enforcement ──────────────────────
-    valid_clips:    list[dict] = []
+    valid_clips: list[dict] = []
     rejected_clips: list[dict] = []
 
     for raw_clip in raw_clips:
@@ -2177,13 +2316,16 @@ def analyze_chunks(
         else:
             LOGGER.warning(
                 "  Rejected clip '%s': %s",
-                clip.get("title", "untitled"), reason,
+                clip.get("title", "untitled"),
+                reason,
             )
             rejected_clips.append(clip)
 
     LOGGER.info(
         "  Clip validation: %d valid, %d rejected out of %d suggested",
-        len(valid_clips), len(rejected_clips), len(raw_clips)
+        len(valid_clips),
+        len(rejected_clips),
+        len(raw_clips),
     )
 
     # ── Min-clips guarantee — re-prompt if not enough valid clips ─────────────
@@ -2191,13 +2333,17 @@ def analyze_chunks(
         deficit = min_clips - len(valid_clips)
         LOGGER.warning(
             "  Only %d valid clips found, need %d more. Re-prompting with relaxed guidance...",
-            len(valid_clips), deficit
+            len(valid_clips),
+            deficit,
         )
 
         # Reprompt with relaxed guidance
-        retry_prompt = prompt + f"\n\nOnly found {len(valid_clips)}/30-90s clips. RELAX rules and find ANY interesting {min_sec}-{max_sec}s segments."
-        
-        for retry_attempt in range(1, 3):   # up to 2 extra attempts
+        retry_prompt = (
+            prompt
+            + f"\n\nOnly found {len(valid_clips)}/30-90s clips. RELAX rules and find ANY interesting {min_sec}-{max_sec}s segments."
+        )
+
+        for retry_attempt in range(1, 3):  # up to 2 extra attempts
             LOGGER.info("  Min-clips retry %d/2...", retry_attempt)
             try:
                 retry_text = llm_fn(retry_prompt)
@@ -2206,7 +2352,10 @@ def analyze_chunks(
                     continue
 
                 if not all(isinstance(c, dict) for c in retry_parsed):
-                    LOGGER.warning("  Min-clips retry %d returned non-object items, skipping.", retry_attempt)
+                    LOGGER.warning(
+                        "  Min-clips retry %d returned non-object items, skipping.",
+                        retry_attempt,
+                    )
                     continue
 
                 for raw_retry in retry_parsed:
@@ -2218,19 +2367,25 @@ def analyze_chunks(
                         continue
 
                     # Fix mid-sentence cuts
-                    clip = fix_sentence_boundary(clip, segments, video_duration, max_extend=5.0)
+                    clip = fix_sentence_boundary(
+                        clip, segments, video_duration, max_extend=5.0
+                    )
 
                     # Try to expand short clips before rejecting them
                     duration = clip["end"] - clip["start"]
                     if 0 < duration < min_sec:
-                        clip = expand_clip_to_minimum(clip, min_sec, max_sec, video_duration)
+                        clip = expand_clip_to_minimum(
+                            clip, min_sec, max_sec, video_duration
+                        )
 
                     ok, reason = validate_clip(clip, video_duration, min_sec, max_sec)
                     if ok:
                         valid_clips.append(clip)
                         LOGGER.info(
                             "  Recovery clip accepted: '%s' (%.1fs–%.1fs)",
-                            clip.get("title"), clip.get("start"), clip.get("end")
+                            clip.get("title"),
+                            clip.get("start"),
+                            clip.get("end"),
                         )
 
                 if len(valid_clips) >= min_clips:
@@ -2243,14 +2398,18 @@ def analyze_chunks(
         LOGGER.error(
             "  Could not reach min_clips=%d even after retries. Got %d. "
             "Consider lowering --min or --min-clips for this video.",
-            min_clips, len(valid_clips)
+            min_clips,
+            len(valid_clips),
         )
 
     # ── Sort by score, cap at max_clips ──────────────────────────────────────
     valid_clips.sort(key=lambda c: c.get("score", 0), reverse=True)
     return valid_clips[:max_clips]
-    
-def rewrite_hooks(clips: list[dict[str, Any]], use_gemini: bool) -> list[dict[str, Any]]:
+
+
+def rewrite_hooks(
+    clips: list[dict[str, Any]], use_gemini: bool
+) -> list[dict[str, Any]]:
     """Ask LLM to generate 5 TikTok caption variations for each clip's hook."""
     llm_fn = call_gemini if use_gemini else call_ollama
 
@@ -2281,7 +2440,9 @@ Example output:
             end = raw.rfind("]") + 1
             variants = json.loads(raw[start:end]) if start != -1 else []
             clip["hook_variants"] = [str(v)[:120] for v in variants[:5]]
-            LOGGER.info("Hook variants for '%s': %s", clip["title"], clip["hook_variants"])
+            LOGGER.info(
+                "Hook variants for '%s': %s", clip["title"], clip["hook_variants"]
+            )
         except Exception as exc:
             LOGGER.warning("Hook rewrite failed for '%s': %s", clip["title"], exc)
             clip["hook_variants"] = []
@@ -2320,7 +2481,9 @@ def save_json(path: Path, payload: Any) -> None:
     )
 
 
-def remove_path_with_retries(path: Path, attempts: int = 5, delay_sec: float = 1.0) -> bool:
+def remove_path_with_retries(
+    path: Path, attempts: int = 5, delay_sec: float = 1.0
+) -> bool:
     """Remove a file or directory, retrying briefly for Windows file locks."""
     for attempt in range(attempts):
         try:
@@ -2368,14 +2531,20 @@ def process_clip_batch(
             existing_metadata = load_json(metadata_path, [])
             if not isinstance(existing_metadata, list):
                 existing_metadata = []
-            LOGGER.info("  Loaded %d existing clips from metadata.", len(existing_metadata))
+            LOGGER.info(
+                "  Loaded %d existing clips from metadata.", len(existing_metadata)
+            )
         except Exception as exc:
-            LOGGER.warning("  Could not read existing metadata (%s), starting fresh.", exc)
+            LOGGER.warning(
+                "  Could not read existing metadata (%s), starting fresh.", exc
+            )
 
     new_clip_metadata: list[dict[str, Any]] = []
 
     for index, clip in enumerate(clips, start=1):
-        filename_root = f"{index:02d}_{safe_filename(clip['title'])}_{int(clip['start'])}s"
+        filename_root = (
+            f"{index:02d}_{safe_filename(clip['title'])}_{int(clip['start'])}s"
+        )
         srt_path = TEMP_DIR / f"{filename_root}.srt"
         output_path = OUTPUT_DIR / f"{filename_root}.mp4"
         individual_metadata_path = OUTPUT_DIR / f"{filename_root}.json"
@@ -2432,7 +2601,9 @@ def process_clip_batch(
         save_json(metadata_path, merged_metadata)
         LOGGER.info(
             "  Metadata saved: %d total clips (%d new, %d historical).",
-            len(merged_metadata), len(new_clip_metadata), len(existing_metadata)
+            len(merged_metadata),
+            len(new_clip_metadata),
+            len(existing_metadata),
         )
     except Exception as exc:
         LOGGER.error("  Could not write metadata: %s", exc)
@@ -2445,8 +2616,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="ClipForge AI video clipping pipeline")
     parser.add_argument("source", help="YouTube URL or local video file path")
     parser.add_argument("--model", default=OLLAMA_MODEL, help="Ollama model name")
-    parser.add_argument("--whisper", default=WHISPER_MODEL, choices=["tiny", "base", "small", "medium", "large"], help="Whisper model size")
-    parser.add_argument("--clips", type=int, default=MAX_CLIPS, help="Maximum clips to generate")
+    parser.add_argument(
+        "--whisper",
+        default=WHISPER_MODEL,
+        choices=["tiny", "base", "small", "medium", "large"],
+        help="Whisper model size",
+    )
+    parser.add_argument(
+        "--clips", type=int, default=MAX_CLIPS, help="Maximum clips to generate"
+    )
     parser.add_argument(
         "--min-clips",
         type=int,
@@ -2459,12 +2637,27 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "Use 1 to always attempt at least one clip. (default: 1)"
         ),
     )
-    parser.add_argument("--min", dest="min_sec", type=int, default=MIN_CLIP_SEC, help="Minimum clip seconds")
-    parser.add_argument("--max", dest="max_sec", type=int, default=MAX_CLIP_SEC, help="Maximum clip seconds")
-    parser.add_argument("--gemini", action="store_true", help="Use Gemini instead of Ollama")
     parser.add_argument(
-        "--prompt", "--custom-prompt",    # both flags work
-        dest="prompt",                    # stored as args.prompt
+        "--min",
+        dest="min_sec",
+        type=int,
+        default=MIN_CLIP_SEC,
+        help="Minimum clip seconds",
+    )
+    parser.add_argument(
+        "--max",
+        dest="max_sec",
+        type=int,
+        default=MAX_CLIP_SEC,
+        help="Maximum clip seconds",
+    )
+    parser.add_argument(
+        "--gemini", action="store_true", help="Use Gemini instead of Ollama"
+    )
+    parser.add_argument(
+        "--prompt",
+        "--custom-prompt",  # both flags work
+        dest="prompt",  # stored as args.prompt
         metavar="TEXT",
         default="",
         help="Custom instructions for the AI clip selector.",
@@ -2487,7 +2680,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Subtitle style: 0=Classic, 1=TikTok Yellow, 2=Storyteller, 3=Neon Cyan, 4=Action Red",
     )
     parser.add_argument("--job-id", default="", help=argparse.SUPPRESS)
-    parser.add_argument("--transcribe-worker", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument(
+        "--transcribe-worker", action="store_true", help=argparse.SUPPRESS
+    )
     parser.add_argument("--transcribe-output", default="", help=argparse.SUPPRESS)
     parser.add_argument(
         "--no-face-tracking",
@@ -2523,20 +2718,22 @@ def run_pipeline(args: argparse.Namespace) -> list[dict[str, Any]]:
         LOGGER.info("Stage 2/5: Starting transcription (GPU)...")
         transcript = transcribe(video_path, model_name=args.whisper)
         segments = transcript.get("segments", [])
-        duration = get_video_duration(video_path)
+        get_video_duration(video_path)
         model = args.model
-        min_clip = args.min_sec
-        max_clip = args.max_sec
 
         LOGGER.info("Transcription returned, saving to disk...")
         try:
             save_json(transcript_path, transcript)
             LOGGER.info("Transcript saved OK: %s", transcript_path)
-            
+
             if not segments:
-                LOGGER.error("No speech detected in this video. Clip extraction skipped.")
+                LOGGER.error(
+                    "No speech detected in this video. Clip extraction skipped."
+                )
                 # We mention model parameters as secondary tip
-                LOGGER.info("TIP: If the video actually has speech, try lowering VAD threshold or using a larger Whisper model (e.g. --whisper large).")
+                LOGGER.info(
+                    "TIP: If the video actually has speech, try lowering VAD threshold or using a larger Whisper model (e.g. --whisper large)."
+                )
                 raise PipelineError("Empty transcript — no speech detected in video.")
         except Exception as exc:
             LOGGER.error("save_json FAILED: %s", exc)
@@ -2590,7 +2787,7 @@ def run_pipeline(args: argparse.Namespace) -> list[dict[str, Any]]:
                 "    ollama pull llama3.2:latest    (good balance)\n"
                 "    ollama pull mistral-nemo       (improved Mistral variant)\n"
                 "  Or enable Gemini fallback in the dashboard.",
-                args.model
+                args.model,
             )
             raise SystemExit(1)
         if not deduped:
@@ -2628,14 +2825,18 @@ def _run_tests() -> None:
     assert sec_to_ts(90.5) == "00:01:30.500"
     name = safe_filename("this/is a noisy:title*with spaces and symbols?" * 2)
     assert "/" not in name and len(name) <= 60
-    parsed = parse_llm_json('before [{"start": 0, "end": 30, "title": "A", "hook": "B", "reason": "C"}] after')
+    parsed = parse_llm_json(
+        'before [{"start": 0, "end": 30, "title": "A", "hook": "B", "reason": "C"}] after'
+    )
     assert parsed[0]["start"] == 0
     try:
         parse_llm_json("no array here")
     except ValueError:
         pass
     else:
-        raise AssertionError("parse_llm_json should raise ValueError when no JSON array exists.")
+        raise AssertionError(
+            "parse_llm_json should raise ValueError when no JSON array exists."
+        )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -2663,7 +2864,9 @@ def main(argv: list[str] | None = None) -> int:
     except PipelineError as exc:
         LOGGER.error(str(exc))
         return 1
-    clip_count = len(results.get("clips", [])) if isinstance(results, dict) else len(results)
+    clip_count = (
+        len(results.get("clips", [])) if isinstance(results, dict) else len(results)
+    )
     LOGGER.info("Done. Generated %d clip(s).", clip_count)
     return 0
 

@@ -40,7 +40,9 @@ def find_ffprobe_binary() -> str:
         ffmpeg_binary = Path(find_ffmpeg_binary())
     except RuntimeError as exc:
         raise RuntimeError("ffprobe comes with FFmpeg — reinstall it") from exc
-    sibling = ffmpeg_binary.with_name("ffprobe.exe" if ffmpeg_binary.suffix.lower() == ".exe" else "ffprobe")
+    sibling = ffmpeg_binary.with_name(
+        "ffprobe.exe" if ffmpeg_binary.suffix.lower() == ".exe" else "ffprobe"
+    )
     if sibling.exists():
         return str(sibling)
     raise RuntimeError("ffprobe comes with FFmpeg — reinstall it")
@@ -74,12 +76,18 @@ def get_source_info(path: Path) -> dict[str, Any]:
     except FileNotFoundError as exc:
         raise RuntimeError("ffprobe comes with FFmpeg — reinstall it") from exc
     except subprocess.CalledProcessError as exc:
-        raise RuntimeError(exc.stderr.strip() or exc.stdout.strip() or "ffprobe failed") from exc
+        raise RuntimeError(
+            exc.stderr.strip() or exc.stdout.strip() or "ffprobe failed"
+        ) from exc
 
     payload = json.loads(result.stdout or "{}")
     streams = payload.get("streams", [])
-    video_stream = next((stream for stream in streams if stream.get("codec_type") == "video"), {})
-    audio_stream = next((stream for stream in streams if stream.get("codec_type") == "audio"), {})
+    video_stream = next(
+        (stream for stream in streams if stream.get("codec_type") == "video"), {}
+    )
+    audio_stream = next(
+        (stream for stream in streams if stream.get("codec_type") == "audio"), {}
+    )
     format_info = payload.get("format", {})
 
     duration_sec = float(format_info.get("duration") or 0.0)
@@ -254,8 +262,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     """Parse CLI arguments for the quality fixer."""
     parser = argparse.ArgumentParser(description="ClipForge video quality fixer")
     parser.add_argument("target", nargs="?", help="Clip path or batch folder")
-    parser.add_argument("--batch", action="store_true", help="Process all clips in a folder")
-    parser.add_argument("--check", action="store_true", help="Only analyze quality without re-encoding")
+    parser.add_argument(
+        "--batch", action="store_true", help="Process all clips in a folder"
+    )
+    parser.add_argument(
+        "--check", action="store_true", help="Only analyze quality without re-encoding"
+    )
     return parser.parse_args(argv)
 
 
