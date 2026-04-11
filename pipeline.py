@@ -13,6 +13,11 @@ import re
 import shutil
 import subprocess
 import sys
+if sys.stdout.encoding != 'utf-8':
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+if sys.stderr.encoding != 'utf-8':
+    sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+
 import textwrap
 import time
 import uuid
@@ -316,6 +321,7 @@ def setup_logging() -> logging.Logger:
     LOGGER.setLevel(logging.DEBUG)
     formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
     stream_handler = logging.StreamHandler(sys.stdout)
+    stream_handler.stream = open(sys.stdout.fileno(), mode='w', encoding='utf-8', errors='replace', closefd=False)
     stream_handler.setLevel(logging.DEBUG)
     stream_handler.setFormatter(formatter)
     LOGGER.addHandler(stream_handler)
@@ -440,23 +446,25 @@ def get_video_duration(video_path: Path) -> float:
 def snap_to_scene_cut(video_path: Path, timestamp: float, window: float = 1.5) -> float:
     """Snap a timestamp to the nearest scene cut within ±window seconds."""
     ffmpeg_bin = find_ffmpeg_binary()
+    scan_start = max(0, timestamp - window - 2)
+    scan_duration = (window + 2) * 2  # scan only ±4s around timestamp
+
     cmd = [
-        ffmpeg_bin, "-i", str(video_path),
+        ffmpeg_bin,
+        "-ss", str(scan_start),        # seek to clip region
+        "-t",  str(scan_duration),     # scan only small window
+        "-i", str(video_path),
         "-vf", f"select='gt(scene,{SCENE_THRESHOLD})',showinfo",
         "-vsync", "0", "-f", "null", "-"
     ]
     try:
-        # We only scan within a reasonable range to save time if we had sought, 
-        # but select filter scans globally unless we use -ss/-t. 
-        # For simplicity and given the user's snippet, we'll scan the whole video 
-        # but with a short timeout.
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
         scene_times = []
         for line in result.stderr.splitlines():
             if "pts_time:" in line:
                 try:
                     t = float(line.split("pts_time:")[1].split()[0])
-                    scene_times.append(t)
+                    scene_times.append(t + scan_start)
                 except (ValueError, IndexError):
                     continue
                     
@@ -850,6 +858,9 @@ def _transcribe_in_process(video_path: Path, model_name: str) -> dict[str, Any]:
         },
     )
 
+    LOGGER.info("  Detected language: %s (%.0f%% confidence)", 
+        info.language, info.language_probability * 100)
+
     segments, text = _collect_transcript_segments(raw_segments, info)
     return {
         "text": text,
@@ -881,6 +892,9 @@ def _transcribe_worker_to_file(video_path: Path, model_name: str, output_path: P
             "threshold": 0.35,
         },
     )
+
+    LOGGER.info("  Detected language: %s (%.0f%% confidence)", 
+        info.language, info.language_probability * 100)
 
     segments, text = _collect_transcript_segments(raw_segments, info)
     transcript = {
