@@ -4,6 +4,7 @@ import argparse
 import json
 import mimetypes
 import os
+import re
 import shutil
 import socketserver
 import subprocess
@@ -11,6 +12,7 @@ import sys
 import threading
 import time
 import uuid
+import platform
 from collections import deque
 from datetime import datetime, timezone
 from http import HTTPStatus
@@ -200,9 +202,42 @@ def to_relative_url(path: Path) -> str:
 
 
 def load_clips() -> list[dict[str, Any]]:
-    """Load clip metadata enriched for the dashboard."""
+    """Load clip metadata enriched for the dashboard, rebuilding from sidecars if needed."""
     metadata_path = pipeline.OUTPUT_DIR / "clips_metadata.json"
     records = load_json(metadata_path, [])
+    
+    # ── Rebuild from .json sidecars if metadata is missing or empty ──────────
+    if not records and pipeline.OUTPUT_DIR.exists():
+        records = []
+        seen_files = set()
+        for json_file in sorted(pipeline.OUTPUT_DIR.glob("*.json")):
+            if json_file.name == "clips_metadata.json":
+                continue
+            try:
+                entry = load_json(json_file, {})
+                mp4_name = json_file.stem + ".mp4"
+                if mp4_name in seen_files:
+                    continue
+                seen_files.add(mp4_name)
+                # Normalize into standard metadata shape
+                records.append({
+                    "video_name": entry.get("video_name", "unknown"),
+                    "title": entry.get("title", json_file.stem),
+                    "start": entry.get("start", 0),
+                    "end": entry.get("end", 0),
+                    "score": entry.get("score", 0),
+                    "reason": entry.get("reason", ""),
+                    "output_file": mp4_name,
+                    "video_path": str((pipeline.OUTPUT_DIR / mp4_name).resolve()),
+                    "subtitle_path": str((pipeline.TEMP_DIR / (json_file.stem + ".srt")).resolve()),
+                    "generated_at": entry.get("generated_at", ""),
+                    "subtitle_style": entry.get("subtitle_style", 0),
+                })
+            except Exception:
+                continue
+        if records:
+            save_json(metadata_path, records)
+
     if not isinstance(records, list):
         records = []
 
@@ -210,13 +245,24 @@ def load_clips() -> list[dict[str, Any]]:
     for record in records:
         if not isinstance(record, dict):
             continue
-        raw_video_path = Path(str(record.get("video_path", "")))
-        raw_subtitle_path = Path(str(record.get("subtitle_path", "")))
-        video_path = raw_video_path if raw_video_path.is_absolute() else (ROOT_DIR / raw_video_path)
-        subtitle_path = raw_subtitle_path if raw_subtitle_path.is_absolute() else (ROOT_DIR / raw_subtitle_path)
-        json_path = pipeline.OUTPUT_DIR / f"{video_path.stem}.json"
+        
+        # Determine path to video
+        v_name = record.get("output_file") or record.get("video_name") or ""
+        if v_name and not v_name.endswith(".mp4") and "." not in v_name:
+             v_name += ".mp4"
+        
+        video_path = pipeline.OUTPUT_DIR / v_name
+        if not video_path.exists():
+            # Try absolute path from record
+            raw_video_path = Path(str(record.get("video_path", "")))
+            video_path = raw_video_path if raw_video_path.is_absolute() else (ROOT_DIR / raw_video_path)
+            
         if not video_path.exists():
             continue
+
+        raw_subtitle_path = Path(str(record.get("subtitle_path", "")))
+        subtitle_path = raw_subtitle_path if raw_subtitle_path.is_absolute() else (ROOT_DIR / raw_subtitle_path)
+        json_path = pipeline.OUTPUT_DIR / f"{video_path.stem}.json"
 
         clips.append(
             {
@@ -225,13 +271,14 @@ def load_clips() -> list[dict[str, Any]]:
                 "reason": record.get("reason", ""),
                 "start": record.get("start", 0),
                 "end": record.get("end", 0),
-                "duration": record.get("duration", 0),
+                "duration": record.get("duration", 0) or round(float(record.get("end", 0)) - float(record.get("start", 0)), 2),
                 "video_name": video_path.name,
                 "video_size_mb": round(video_path.stat().st_size / (1024 * 1024), 2),
-                "modified_at": datetime.fromtimestamp(video_path.stat().st_mtime, tz=timezone.utc).isoformat(),
+                "modified_at": record.get("generated_at") or datetime.fromtimestamp(video_path.stat().st_mtime, tz=timezone.utc).isoformat(),
                 "video_url": to_relative_url(video_path),
                 "json_url": to_relative_url(json_path) if json_path.exists() else "",
                 "subtitle_url": to_relative_url(subtitle_path) if subtitle_path.exists() else "",
+                "thumbnail_url": to_relative_url(video_path.with_suffix(".jpg")) if video_path.with_suffix(".jpg").exists() else "",
                 "video_path": str(video_path.resolve()),
                 "video_relative": str(video_path.resolve().relative_to(ROOT_DIR)).replace("\\", "/"),
                 "json_path": str(json_path.resolve()) if json_path.exists() else "",
@@ -465,6 +512,7 @@ class JobManager:
         self._lock = threading.Lock()
         self._process: subprocess.Popen[str] | None = None
         self._job: dict[str, Any] | None = None
+        self._queue: list[dict[str, Any]] = []
         self._history: list[dict[str, Any]] = load_json(HISTORY_FILE, [])
 
     def _infer_stage(self, line: str) -> str:
@@ -523,14 +571,20 @@ class JobManager:
         self._persist_history()
 
     def start_job(self, config: dict[str, Any]) -> tuple[bool, str]:
-        """Launch the pipeline subprocess if no job is active."""
+        """Launch the pipeline subprocess or queue it if busy."""
         source = str(config.get("source", "")).strip()
         if not source:
             return False, "Add a video URL or local file path first."
 
+        # Read 'prompt' consistently, supporting backward compatibility
+        custom_prompt = config.get("prompt") or config.get("custom_prompt") or ""
+        custom_prompt = custom_prompt.strip()
+
         with self._lock:
+            # If already running, add to queue instead
             if self._process and self._process.poll() is None:
-                return False, "A ClipForge job is already running."
+                self._queue.append(config)
+                return True, f"Video added to queue ({len(self._queue)} pending)."
 
             job_id = datetime.now().strftime("%Y%m%d-%H%M%S")
             command = [
@@ -552,6 +606,18 @@ class JobManager:
             ]
             if bool(config.get("gemini")):
                 command.append("--gemini")
+            if custom_prompt:
+                command.extend(["--prompt", custom_prompt])
+            if bool(config.get("upscale")):
+                command.append("--upscale")
+            if bool(config.get("no_scene_snap")):
+                command.append("--no-scene-snap")
+            if config.get("subtitle_style") is not None:
+                command.extend(["--subtitle-style", str(config.get("subtitle_style"))])
+            if config.get("face_tracking") is False:
+                command.append("--no-face-tracking")
+            if config.get("min_clips") is not None:
+                command.extend(["--min-clips", str(config.get("min_clips"))])
 
             self._job = {
                 "id": job_id,
@@ -569,6 +635,11 @@ class JobManager:
                     "min_sec": int(config.get("min_sec", pipeline.MIN_CLIP_SEC)),
                     "max_sec": int(config.get("max_sec", pipeline.MAX_CLIP_SEC)),
                     "gemini": bool(config.get("gemini")),
+                    "prompt": custom_prompt,
+                    "upscale": bool(config.get("upscale")),
+                    "no_scene_snap": bool(config.get("no_scene_snap")),
+                    "subtitle_style": int(config.get("subtitle_style", 0)),
+                    "face_tracking": bool(config.get("face_tracking", True)),
                 },
                 "baseline_videos": [clip["video_name"] for clip in load_clips()],
                 "logs": [],
@@ -586,16 +657,41 @@ class JobManager:
         return True, "ClipForge run started."
 
     def _watch_process(self, process: subprocess.Popen[str], job_id: str) -> None:
-        """Capture live logs and finalize job state."""
+        """Capture live logs, filter noise, and finalize job state."""
         assert process.stdout is not None
+        
+        ffmpeg_noise = re.compile(
+            r"(frame=\s*\d+|fps=|bitrate=|speed=|size=\s*\d+kB"
+            r"|time=\d+:\d+:\d+|dup=|drop=|Output #|Input #"
+            r"|Stream mapping:|Press \[q\]|encoder\s*:|"
+            r"video:\d+|audio:\d+|subtitle:\d+|global headers)"
+        )
+
         for raw_line in process.stdout:
             line = raw_line.rstrip()
+            
+            # Filter FFmpeg noise
+            stripped = line.strip()
+            if not stripped: continue
+            if ffmpeg_noise.search(stripped): continue
+            
+            # Junk threshold for long lines without log markers
+            markers = ("[INFO]", "[WARNING]", "[ERROR]", "Stage", "Done.", "Saved clip", "Face tracking")
+            if len(stripped) > 200 and not any(m in stripped for m in markers):
+                continue
+
             print(line, flush=True)
             with self._lock:
                 if not self._job or self._job.get("id") != job_id:
                     continue
+                
+                # Tag for frontend
+                if "[ERROR]" in line: tagged = f"[ERROR] {line}"
+                elif "[WARNING]" in line: tagged = f"[WARNING] {line}"
+                else: tagged = line
+
                 logs = deque(self._job.get("logs", []), maxlen=MAX_LOG_LINES)
-                logs.append(line)
+                logs.append(tagged)
                 self._job["logs"] = list(logs)
                 inferred_stage = self._infer_stage(line)
                 if inferred_stage != "Working":
@@ -618,6 +714,20 @@ class JobManager:
             self._process = None
 
         self._append_history(snapshot)
+        self._trigger_next_job()
+
+    def _trigger_next_job(self) -> None:
+        """Start the next job in the queue if one exists."""
+        with self._lock:
+            if self._process and self._process.poll() is None:
+                return
+            if not self._queue:
+                return
+            config = self._queue.pop(0)
+
+        # Re-call start_job with the next config
+        # Note: start_job already uses the lock internally
+        self.start_job(config)
 
     def snapshot(self) -> dict[str, Any]:
         """Return a safe snapshot of the current job."""
@@ -634,6 +744,7 @@ class JobManager:
             snapshot = dict(self._job)
             snapshot["active"] = snapshot["status"] == "running"
             snapshot["history"] = self._history
+            snapshot["queue_length"] = len(self._queue)
             return snapshot
 
     def start_ollama(self) -> tuple[bool, str]:
@@ -828,9 +939,28 @@ class ClipForgeHandler(BaseHTTPRequestHandler):
         payload = self._read_json_body()
 
         if parsed.path == "/api/run":
-            ok, message = JOB_MANAGER.start_job(payload)
-            status = HTTPStatus.OK if ok else HTTPStatus.CONFLICT
-            self._send_json({"ok": ok, "message": message, "job": JOB_MANAGER.snapshot()}, status=status)
+            sources = payload.get("sources") or []
+            if not sources and payload.get("source"):
+                sources = [payload["source"]]
+
+            if not sources:
+                self._send_json({"ok": False, "message": "No source URLs provided"}, status=HTTPStatus.BAD_REQUEST)
+                return
+
+            results = []
+            for src in sources:
+                if not src.strip():
+                    continue
+                # Create a specific config for this source
+                config = {**payload, "source": src.strip()}
+                ok, msg = JOB_MANAGER.start_job(config)
+                results.append({"source": src, "ok": ok, "message": msg})
+
+            queued_count = sum(1 for r in results if r["ok"])
+            self._send_json(
+                {"ok": True, "queued": queued_count, "results": results, "job": JOB_MANAGER.snapshot()},
+                status=HTTPStatus.OK,
+            )
             return
 
         if parsed.path == "/api/ollama/start":
@@ -860,6 +990,26 @@ class ClipForgeHandler(BaseHTTPRequestHandler):
                 self._send_json({"ok": False, "message": f"Could not open path: {exc}"}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
                 return
             self._send_json({"ok": True, "message": f"Opened {target.name}."})
+            return
+
+        if parsed.path == "/api/open-folder":
+            rel_path = str(payload.get("path", "")).strip()
+            if not rel_path:
+                self._send_json({"ok": False, "error": "No path provided"}, status=HTTPStatus.BAD_REQUEST)
+                return
+
+            abs_path = (ROOT_DIR / rel_path).resolve()
+            try:
+                abs_path.mkdir(parents=True, exist_ok=True)
+                if platform.system() == "Windows":
+                    os.startfile(str(abs_path))
+                elif platform.system() == "Darwin":
+                    subprocess.Popen(["open", str(abs_path)])
+                else:
+                    subprocess.Popen(["xdg-open", str(abs_path)])
+                self._send_json({"ok": True})
+            except Exception as exc:
+                self._send_json({"ok": False, "error": str(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
             return
 
         if parsed.path == "/api/set-encoder":
