@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import mimetypes
 import os
 import re
 import shutil
@@ -14,15 +13,16 @@ import uuid
 import platform
 from collections import deque
 from datetime import datetime, timezone
-from http import HTTPStatus
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import logging
 from pathlib import Path
-from typing import Any
-from urllib.parse import unquote, urlparse
-
+from typing import Any, Dict, List, Optional
 import pipeline
 import setup_check
 import fix_quality
+
+app = Flask(__name__)
+# Suppress default Flask/Werkzeug logging for a cleaner console
+logging.getLogger("werkzeug").setLevel(logging.ERROR)
 
 ROOT_DIR = Path(__file__).resolve().parent
 DASHBOARD_FILE = ROOT_DIR / "dashboard.html"
@@ -32,6 +32,7 @@ MAX_HISTORY_ITEMS = 12
 SETUP_CACHE_TTL = 15.0
 MODELS_CACHE_TTL = 20.0
 PAYLOAD_CACHE_TTL = 3.0
+PAYLOAD_ACTIVE_CACHE_TTL = 0.5
 SETUP_CACHE: dict[str, Any] = {"timestamp": 0.0, "payload": None}
 MODELS_CACHE: dict[str, Any] = {"timestamp": 0.0, "payload": []}
 PAYLOAD_CACHE: dict[str, Any] = {"timestamp": 0.0, "payload": None}
@@ -39,6 +40,11 @@ ENHANCE_JOBS: dict[str, dict[str, Any]] = {}
 ENHANCE_LOCK = threading.Lock()
 ENHANCED_DIR = ROOT_DIR / "outputs" / "enhanced"
 REALESRGAN_EXE = "realesrgan-ncnn-vulkan"
+
+# Video file extensions to show in browser
+VIDEO_EXTENSIONS = {".mp4", ".mkv", ".mov", ".avi", ".webm", ".m4v"}
+# Default start path for file browser - using temp/downloads as requested
+BROWSER_DEFAULT_PATH = str((ROOT_DIR / "temp").resolve())
 
 
 def now_iso() -> str:
@@ -327,6 +333,18 @@ def load_clips() -> list[dict[str, Any]]:
                     video_path.resolve().relative_to(ROOT_DIR)
                 ).replace("\\", "/"),
                 "json_path": str(json_path.resolve()) if json_path.exists() else "",
+                "hook_variants": [
+                    {
+                        **v,
+                        "video_url": to_relative_url(ROOT_DIR / v["file"])
+                        if "file" in v
+                        else "",
+                    }
+                    for v in record.get("hook_variants", [])
+                ],
+                "active_variant": record.get("active_variant", "A")
+                if record.get("hook_variants")
+                else None,
             }
         )
 
@@ -660,7 +678,7 @@ class JobManager:
                 "--job-id",
                 job_id,
                 "--model",
-                str(config.get("model", pipeline.OLLAMA_MODEL)),
+                str(config.get("model") or pipeline.OLLAMA_MODEL),
                 "--whisper",
                 str(config.get("whisper", pipeline.WHISPER_MODEL)),
                 "--clips",
@@ -684,6 +702,20 @@ class JobManager:
                 command.append("--no-face-tracking")
             if config.get("min_clips") is not None:
                 command.extend(["--min-clips", str(config.get("min_clips"))])
+            if config.get("use_cta") is False:
+                command.append("--no-cta")
+            if bool(config.get("tight_cuts")):
+                command.append("--tight-cuts")
+            if bool(config.get("multi_speaker")):
+                command.append("--multi-speaker")
+
+            # ── Music Flags ───────────────────────────────────────────────
+            music_enabled = config.get("music_enabled", True)
+            music_track = config.get("music_track", None)
+            if not music_enabled:
+                command.append("--no-music")
+            elif music_track:
+                command.extend(["--music-track", str(music_track)])
 
             self._job = {
                 "id": job_id,
@@ -716,6 +748,8 @@ class JobManager:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 bufsize=1,
             )
             threading.Thread(
@@ -856,9 +890,14 @@ def dashboard_payload() -> dict[str, Any]:
     """Build the full dashboard state payload."""
     now = time.monotonic()
     cached_payload = PAYLOAD_CACHE["payload"]
+
+    # Use shorter TTL if a job is actively running for real-time feel
+    is_active = JOB_MANAGER.snapshot().get("active", False)
+    effective_ttl = PAYLOAD_ACTIVE_CACHE_TTL if is_active else PAYLOAD_CACHE_TTL
+
     if (
         cached_payload is not None
-        and now - float(PAYLOAD_CACHE["timestamp"]) < PAYLOAD_CACHE_TTL
+        and now - float(PAYLOAD_CACHE["timestamp"]) < effective_ttl
     ):
         return cached_payload
 
@@ -897,356 +936,304 @@ def dashboard_payload() -> dict[str, Any]:
     return payload
 
 
-class SilentThreadingHTTPServer(ThreadingHTTPServer):
-    """Suppress benign Windows client disconnect tracebacks."""
-
-    def handle_error(self, request: Any, client_address: Any) -> None:
-        """Ignore harmless socket disconnect errors and surface real ones."""
-        exc_type = sys.exc_info()[0]
-        if exc_type in (ConnectionAbortedError, BrokenPipeError, ConnectionResetError):
-            return
-        super().handle_error(request, client_address)
+# ── Routes: Dashboard UI ──────────────────────────────────────────────────────
 
 
-class ClipForgeHandler(BaseHTTPRequestHandler):
-    """Serve the dashboard UI and local control API."""
+@app.route("/")
+def index():
+    """Serve the dashboard UI directly."""
+    return send_from_directory(ROOT_DIR, "dashboard.html")
 
-    server_version = "ClipForge/1.0"
 
-    def log_message(self, format: str, *args: Any) -> None:
-        """Silence default HTTP request logging."""
-        return
+@app.route("/files/<path:filename>")
+def serve_file(filename):
+    """Serve workspace files (clips, assets) safely."""
+    try:
+        path = resolve_workspace_path(filename)
+    except ValueError:
+        return jsonify({"ok": False, "message": "Access denied"}), 403
+    if not path.exists() or not path.is_file():
+        return jsonify({"ok": False, "message": "File not found"}), 404
 
-    def _send_json(self, payload: Any, status: int = HTTPStatus.OK) -> None:
-        """Send a JSON response."""
-        try:
-            body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-            self.send_response(status)
-            self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.send_header("Cache-Control", "no-store")
-            self.send_header("Connection", "close")
-            self.end_headers()
-            self.wfile.write(body)
-        except (ConnectionAbortedError, BrokenPipeError, ConnectionResetError):
-            return
+    # Send with no-cache to ensure latest files are always seen
+    return send_from_directory(ROOT_DIR, filename, max_age=0)
 
-    def _send_text_file(self, path: Path, content_type: str) -> None:
-        """Send a text file response."""
-        try:
-            body = path.read_bytes()
-            self.send_response(HTTPStatus.OK)
-            self.send_header("Content-Type", content_type)
-            self.send_header("Content-Length", str(len(body)))
-            self.send_header("Cache-Control", "no-store")
-            self.send_header("Connection", "close")
-            self.end_headers()
-            self.wfile.write(body)
-        except (ConnectionAbortedError, BrokenPipeError, ConnectionResetError):
-            return
 
-    def _read_json_body(self) -> dict[str, Any]:
-        """Read a JSON request body."""
-        length = int(self.headers.get("Content-Length", "0"))
-        raw = self.rfile.read(length) if length > 0 else b"{}"
-        try:
-            payload = json.loads(raw.decode("utf-8") or "{}")
-        except json.JSONDecodeError:
-            return {}
-        return payload if isinstance(payload, dict) else {}
+@app.route("/download/enhanced/<filename>")
+def download_enhanced(filename):
+    """Specific route for downloading AI-enhanced clips."""
+    try:
+        filename = unquote(filename)
+        target = (ENHANCED_DIR / filename).resolve()
+        target.relative_to(ENHANCED_DIR.resolve())
+        if not target.exists():
+            return jsonify({"ok": False, "message": "Enhanced clip not found"}), 404
+        return send_from_directory(ENHANCED_DIR, filename, as_attachment=True)
+    except Exception as e:
+        return jsonify({"ok": False, "message": str(e)}), 400
 
-    def _serve_workspace_file(self, relative_url_path: str) -> None:
-        """Serve a workspace file under /files/."""
-        relative_path = unquote(relative_url_path).lstrip("/")
-        try:
-            path = resolve_workspace_path(relative_path)
-        except ValueError:
-            self.send_error(HTTPStatus.FORBIDDEN)
-            return
-        if not path.exists() or not path.is_file():
-            self.send_error(HTTPStatus.NOT_FOUND)
-            return
 
-        content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
-        data = path.read_bytes()
-        try:
-            self.send_response(HTTPStatus.OK)
-            self.send_header("Content-Type", content_type)
-            self.send_header("Content-Length", str(len(data)))
-            self.send_header("Cache-Control", "no-store")
-            self.send_header("Connection", "close")
-            self.end_headers()
-            self.wfile.write(data)
-        except (ConnectionAbortedError, BrokenPipeError, ConnectionResetError):
-            return
+# ── Routes: Control API ───────────────────────────────────────────────────────
 
-    def do_GET(self) -> None:
-        """Handle GET routes."""
-        try:
-            parsed = urlparse(self.path)
-            if parsed.path in {"/", "/index.html"}:
-                self._send_text_file(DASHBOARD_FILE, "text/html; charset=utf-8")
-                return
-            if parsed.path == "/api/dashboard":
-                self._send_json(dashboard_payload())
-                return
-            if parsed.path == "/api/gpu-diagnostics":
-                self._send_json(gpu_diagnostics())
-                return
-            if parsed.path.startswith("/api/enhance-status/"):
-                job_id = parsed.path.rsplit("/", 1)[-1]
-                job = get_enhance_job(job_id)
-                if not job:
-                    self._send_json(
-                        {
-                            "enhance_job_id": job_id,
-                            "status": "error",
-                            "error": "Unknown enhancement job.",
-                        },
-                        status=HTTPStatus.NOT_FOUND,
+
+@app.route("/api/dashboard")
+def api_dashboard():
+    """Return the full dashboard state payload."""
+    return jsonify(dashboard_payload())
+
+
+@app.route("/api/logs")
+def api_logs():
+    """Fast endpoint for real-time log updates."""
+    snapshot = JOB_MANAGER.snapshot()
+    return jsonify(
+        {
+            "logs": snapshot.get("logs", []),
+            "active": snapshot.get("active", False),
+            "stage": snapshot.get("stage", "Idle"),
+            "status": snapshot.get("status", "idle"),
+        }
+    )
+
+
+@app.route("/api/music-tracks")
+def api_music_tracks():
+    """List available music track MP3s."""
+    music_dir = ROOT_DIR / "assets" / "music"
+    tracks = (
+        [f.name for f in sorted(music_dir.glob("*.mp3"))] if music_dir.exists() else []
+    )
+    return jsonify({"tracks": tracks})
+
+
+@app.route("/api/browse")
+def api_browse():
+    """Server-side file browser."""
+    requested = request.args.get("path", BROWSER_DEFAULT_PATH)
+    try:
+        target = Path(requested).resolve()
+        # Security: ensure we are at least in a valid existing directory
+        if not target.exists():
+            target = Path(BROWSER_DEFAULT_PATH).resolve()
+
+        items = []
+        for entry in sorted(
+            target.iterdir(), key=lambda e: (not e.is_dir(), e.name.lower())
+        ):
+            try:
+                if entry.is_dir() and not entry.name.startswith("."):
+                    items.append(
+                        {"name": entry.name, "path": str(entry), "is_dir": True}
                     )
-                    return
-                self._send_json(job)
-                return
-            if parsed.path.startswith("/download/enhanced/"):
-                filename = Path(unquote(parsed.path.rsplit("/", 1)[-1])).name
-                target = (ENHANCED_DIR / filename).resolve()
-                target.relative_to(ENHANCED_DIR.resolve())
-                if not target.exists():
-                    self.send_error(HTTPStatus.NOT_FOUND)
-                    return
-                body = target.read_bytes()
-                self.send_response(HTTPStatus.OK)
-                self.send_header("Content-Type", "video/mp4")
-                self.send_header("Content-Length", str(len(body)))
-                self.send_header(
-                    "Content-Disposition", f'attachment; filename="{target.name}"'
-                )
-                self.send_header("Cache-Control", "no-store")
-                self.send_header("Connection", "close")
-                self.end_headers()
-                self.wfile.write(body)
-                return
-            if parsed.path.startswith("/files/"):
-                self._serve_workspace_file(parsed.path.removeprefix("/files/"))
-                return
-            self.send_error(HTTPStatus.NOT_FOUND)
-        except (ConnectionAbortedError, BrokenPipeError, ConnectionResetError):
-            return
+                elif entry.is_file() and entry.suffix.lower() in VIDEO_EXTENSIONS:
+                    items.append(
+                        {"name": entry.name, "path": str(entry), "is_dir": False}
+                    )
+            except PermissionError:
+                continue
 
-    def do_POST(self) -> None:
-        """Handle POST routes."""
-        parsed = urlparse(self.path)
-        payload = self._read_json_body()
+        return jsonify(
+            {
+                "current": str(target),
+                "parent": str(target.parent),
+                "items": items,
+            }
+        )
+    except Exception as exc:
+        return jsonify(
+            {"error": str(exc), "current": BROWSER_DEFAULT_PATH, "items": []}
+        ), 400
 
-        if parsed.path == "/api/run":
-            sources = payload.get("sources") or []
-            if not sources and payload.get("source"):
-                sources = [payload["source"]]
 
-            if not sources:
-                self._send_json(
-                    {"ok": False, "message": "No source URLs provided"},
-                    status=HTTPStatus.BAD_REQUEST,
-                )
-                return
+@app.route("/api/gpu-diagnostics")
+def api_diagnostics():
+    """Detailed hardware and driver status."""
+    return jsonify(gpu_diagnostics())
 
-            results = []
-            for src in sources:
-                if not src.strip():
-                    continue
-                # Create a specific config for this source
-                config = {**payload, "source": src.strip()}
-                ok, msg = JOB_MANAGER.start_job(config)
-                results.append({"source": src, "ok": ok, "message": msg})
 
-            queued_count = sum(1 for r in results if r["ok"])
-            self._send_json(
-                {
-                    "ok": True,
-                    "queued": queued_count,
-                    "results": results,
-                    "job": JOB_MANAGER.snapshot(),
-                },
-                status=HTTPStatus.OK,
-            )
-            return
+@app.route("/api/enhance-status/<job_id>")
+def api_enhance_status(job_id):
+    """Check status of a running AI enhancement job."""
+    job = get_enhance_job(job_id)
+    if not job:
+        return jsonify(
+            {
+                "enhance_job_id": job_id,
+                "status": "error",
+                "error": "Unknown enhancement job.",
+            }
+        ), 404
+    return jsonify(job)
 
-        if parsed.path == "/api/ollama/start":
-            ok, message = JOB_MANAGER.start_ollama()
-            status = HTTPStatus.OK if ok else HTTPStatus.BAD_REQUEST
-            self._send_json(
-                {"ok": ok, "message": message, "setup": get_cached_setup(force=True)},
-                status=status,
-            )
-            return
 
-        if parsed.path == "/api/open":
-            relative_path = str(payload.get("path", "")).strip() or "outputs/clips"
-            try:
-                target = resolve_workspace_path(relative_path)
-            except ValueError:
-                self._send_json(
-                    {
-                        "ok": False,
-                        "message": "That path is outside the ClipForge workspace.",
-                    },
-                    status=HTTPStatus.BAD_REQUEST,
-                )
-                return
-            if not target.exists():
-                self._send_json(
-                    {"ok": False, "message": "That path does not exist yet."},
-                    status=HTTPStatus.NOT_FOUND,
-                )
-                return
-            try:
-                if sys.platform.startswith("win"):
-                    os.startfile(str(target))  # type: ignore[attr-defined]
-                elif sys.platform == "darwin":
-                    subprocess.Popen(["open", str(target)], cwd=str(ROOT_DIR))
-                else:
-                    subprocess.Popen(["xdg-open", str(target)], cwd=str(ROOT_DIR))
-            except OSError as exc:
-                self._send_json(
-                    {"ok": False, "message": f"Could not open path: {exc}"},
-                    status=HTTPStatus.INTERNAL_SERVER_ERROR,
-                )
-                return
-            self._send_json({"ok": True, "message": f"Opened {target.name}."})
-            return
+@app.route("/api/run", methods=["POST"])
+def api_run():
+    """Submit one or more videos for clipping."""
+    payload = request.get_json(force=True) or {}
+    sources = payload.get("sources") or []
+    if not sources and payload.get("source"):
+        sources = [payload["source"]]
 
-        if parsed.path == "/api/open-folder":
-            rel_path = str(payload.get("path", "")).strip()
-            if not rel_path:
-                self._send_json(
-                    {"ok": False, "error": "No path provided"},
-                    status=HTTPStatus.BAD_REQUEST,
-                )
-                return
+    if not sources:
+        return jsonify({"ok": False, "message": "No source URLs provided"}), 400
 
-            abs_path = (ROOT_DIR / rel_path).resolve()
-            try:
-                abs_path.mkdir(parents=True, exist_ok=True)
-                if platform.system() == "Windows":
-                    os.startfile(str(abs_path))
-                elif platform.system() == "Darwin":
-                    subprocess.Popen(["open", str(abs_path)])
-                else:
-                    subprocess.Popen(["xdg-open", str(abs_path)])
-                self._send_json({"ok": True})
-            except Exception as exc:
-                self._send_json(
-                    {"ok": False, "error": str(exc)},
-                    status=HTTPStatus.INTERNAL_SERVER_ERROR,
-                )
-            return
+    results = []
+    for src in sources:
+        if not src.strip():
+            continue
+        # Graft logic: start_job handles its own threading/queue internally
+        ok, msg = JOB_MANAGER.start_job({**payload, "source": src.strip()})
+        results.append({"source": src, "ok": ok, "message": msg})
 
-        if parsed.path == "/api/set-encoder":
-            raw_preference = payload.get("prefer_quality", True)
-            if isinstance(raw_preference, str):
-                prefer_quality = raw_preference.strip().lower() not in {
-                    "false",
-                    "0",
-                    "off",
-                    "no",
-                }
-            else:
-                prefer_quality = bool(raw_preference)
-            pipeline.ENCODER_PREFER_QUALITY = prefer_quality
-            pipeline.detect_encoder.cache_clear()
-            PAYLOAD_CACHE.update({"timestamp": 0.0, "payload": None})
-            encoder_name, _ = pipeline.detect_encoder(
-                prefer_quality=pipeline.ENCODER_PREFER_QUALITY
-            )
-            self._send_json(
-                {
-                    "ok": True,
-                    "prefer_quality": pipeline.ENCODER_PREFER_QUALITY,
-                    "encoder": encoder_name,
-                    "speed_encoder": pipeline.detect_encoder(prefer_quality=False)[0],
-                }
-            )
-            return
+    return jsonify(
+        {
+            "ok": True,
+            "queued": sum(1 for r in results if r["ok"]),
+            "results": results,
+            "job": JOB_MANAGER.snapshot(),
+        }
+    )
 
-        if parsed.path == "/api/enhance":
-            filename = Path(str(payload.get("filename", "")).strip()).name
-            mode = str(payload.get("mode", "fast")).strip().lower()
-            scale = int(payload.get("scale", 2) or 2)
-            if mode not in {"fast", "ai"}:
-                self._send_json(
-                    {"ok": False, "message": "Mode must be 'fast' or 'ai'."},
-                    status=HTTPStatus.BAD_REQUEST,
-                )
-                return
-            if scale not in {2, 4}:
-                self._send_json(
-                    {"ok": False, "message": "Scale must be 2 or 4."},
-                    status=HTTPStatus.BAD_REQUEST,
-                )
-                return
-            try:
-                src = safe_output_clip(filename)
-            except ValueError:
-                self._send_json(
-                    {"ok": False, "message": "Invalid filename."},
-                    status=HTTPStatus.BAD_REQUEST,
-                )
-                return
-            if not src.exists():
-                self._send_json(
-                    {"ok": False, "message": "Clip not found in outputs/clips."},
-                    status=HTTPStatus.NOT_FOUND,
-                )
-                return
 
-            enhance_job_id = f"enh_{uuid.uuid4().hex[:8]}"
-            update_enhance_job(
-                enhance_job_id,
-                enhance_job_id=enhance_job_id,
-                filename=filename,
-                status="running",
-                progress=0,
-                output_filename=None,
-                download_url=None,
-                error=None,
-                message="Starting...",
-            )
-            thread = threading.Thread(
-                target=run_enhance,
-                args=(filename, mode, scale, enhance_job_id),
-                daemon=True,
-            )
-            thread.start()
-            self._send_json({"enhance_job_id": enhance_job_id, "status": "started"})
-            return
+@app.route("/api/ollama/start", methods=["POST"])
+def api_ollama_start():
+    """Attempt to start the Ollama backend."""
+    ok, message = JOB_MANAGER.start_ollama()
+    return jsonify(
+        {"ok": ok, "message": message, "setup": get_cached_setup(force=True)}
+    ), (200 if ok else 400)
 
-        self.send_error(HTTPStatus.NOT_FOUND)
+
+@app.route("/api/open", methods=["POST"])
+def api_open():
+    """Open a workspace file or folder in the OS native explorer."""
+    payload = request.get_json(force=True) or {}
+    relative_path = str(payload.get("path", "")).strip() or "outputs/clips"
+    try:
+        target = resolve_workspace_path(relative_path)
+        if not target.exists():
+            return jsonify(
+                {"ok": False, "message": "That path does not exist yet."}
+            ), 404
+
+        if sys.platform.startswith("win"):
+            os.startfile(str(target))
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", str(target)], cwd=str(ROOT_DIR))
+        else:
+            subprocess.Popen(["xdg-open", str(target)], cwd=str(ROOT_DIR))
+        return jsonify({"ok": True, "message": f"Opened {target.name}."})
+    except Exception as e:
+        return jsonify({"ok": False, "message": str(e)}), 400
+
+
+@app.route("/api/open-folder", methods=["POST"])
+def api_open_folder():
+    """Specific route to open/create a folder in OS explorer."""
+    payload = request.get_json(force=True) or {}
+    rel_path = str(payload.get("path", "")).strip()
+    if not rel_path:
+        return jsonify({"ok": False, "error": "No path provided"}), 400
+
+    abs_path = (ROOT_DIR / rel_path).resolve()
+    try:
+        abs_path.mkdir(parents=True, exist_ok=True)
+        if platform.system() == "Windows":
+            os.startfile(str(abs_path))
+        elif platform.system() == "Darwin":
+            subprocess.Popen(["open", str(abs_path)])
+        else:
+            subprocess.Popen(["xdg-open", str(abs_path)])
+        return jsonify({"ok": True})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@app.route("/api/set-encoder", methods=["POST"])
+def api_set_encoder():
+    """Update preferred encoder (Quality vs. Speed)."""
+    payload = request.get_json(force=True) or {}
+    raw_preference = payload.get("prefer_quality", True)
+    if isinstance(raw_preference, str):
+        prefer_quality = raw_preference.strip().lower() not in {
+            "false",
+            "0",
+            "off",
+            "no",
+        }
+    else:
+        prefer_quality = bool(raw_preference)
+
+    pipeline.ENCODER_PREFER_QUALITY = prefer_quality
+    pipeline.detect_encoder.cache_clear()
+    PAYLOAD_CACHE.update({"timestamp": 0.0, "payload": None})
+    encoder_name, _ = pipeline.detect_encoder(
+        prefer_quality=pipeline.ENCODER_PREFER_QUALITY
+    )
+    return jsonify(
+        {
+            "ok": True,
+            "prefer_quality": pipeline.ENCODER_PREFER_QUALITY,
+            "encoder": encoder_name,
+            "speed_encoder": pipeline.detect_encoder(prefer_quality=False)[0],
+        }
+    )
+
+
+@app.route("/api/enhance", methods=["POST"])
+def api_enhance():
+    """Trigger the AI enhancement pipeline for a specific clip."""
+    payload = request.get_json(force=True) or {}
+    filename = Path(str(payload.get("filename", "")).strip()).name
+    mode = str(payload.get("mode", "fast")).strip().lower()
+    scale = int(payload.get("scale", 2) or 2)
+
+    try:
+        src = safe_output_clip(filename)
+        if not src.exists():
+            return jsonify({"ok": False, "message": "Clip not found"}), 404
+
+        enhance_job_id = f"enh_{uuid.uuid4().hex[:8]}"
+        update_enhance_job(
+            enhance_job_id, status="running", progress=0, message="Starting..."
+        )
+
+        thread = threading.Thread(
+            target=run_enhance,
+            args=(filename, mode, scale, enhance_job_id),
+            daemon=True,
+        )
+        thread.start()
+        return jsonify({"enhance_job_id": enhance_job_id, "status": "started"})
+    except Exception as e:
+        return jsonify({"ok": False, "message": str(e)}), 400
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     """Parse CLI arguments for the local web app."""
     parser = argparse.ArgumentParser(description="ClipForge local dashboard server")
-    parser.add_argument("--host", default="127.0.0.1", help="Host interface to bind")
-    parser.add_argument("--port", type=int, default=4173, help="Port to serve on")
+    parser.add_argument("--host", default="0.0.0.0", help="Host interface to bind")
+    parser.add_argument("--port", type=int, default=5000, help="Port to serve on")
     return parser.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Run the local ClipForge dashboard server."""
+    """Run the local ClipForge dashboard server using Flask."""
     args = parse_args(argv)
     pipeline.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     pipeline.TEMP_DIR.mkdir(parents=True, exist_ok=True)
-    server = SilentThreadingHTTPServer((args.host, args.port), ClipForgeHandler)
-    print(f"ClipForge dashboard running at http://{args.host}:{args.port}")
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        pass
-    finally:
-        server.server_close()
+
+    display_host = "localhost" if args.host == "0.0.0.0" else args.host
+    print(f"ClipForge dashboard running at http://{display_host}:{args.port}")
+    # Using threaded=True is important for handling long-running API calls if needed,
+    # though our core logic uses background threads anyway.
+    app.run(host=args.host, port=args.port, debug=False, threaded=True)
     return 0
 
 
 if __name__ == "__main__":
+    import os
+
+    # Ensure FLASK_ENV is not set to development to avoid auto-reload issues with background threads
+    os.environ["FLASK_ENV"] = "production"
     raise SystemExit(main())

@@ -28,3 +28,12 @@ vcomp140d.dll
 
 .DS_Store
 Thumbs.db
+GEMINI_API_KEY.txt
+test_error.txt
+test_results.txt
+debug_llm.txt
+*.log
+.vite/
+node_modules/
+dist/
+build/

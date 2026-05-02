@@ -27,6 +27,12 @@ from pathlib import Path
 from typing import Any
 from urllib import error, parse, request
 import requests
+from modules.hybrid import apply_hybrid, TRIGGER_MODES
+from modules.board_crop import apply_board_crop
+from modules.color_lut import apply_lut_to_clip, DEFAULT_LUT_PATH
+from modules.audio import apply_music
+from modules.scene_crop import detect_clip_mode
+from modules.hooks import generate_hook_variants
 
 # ── JSON Schema for structured LLM output ────────────────────────────────────
 CLIP_JSON_SCHEMA = {
@@ -68,81 +74,14 @@ OUTPUT_DIR = Path("outputs/clips")
 TEMP_DIR = Path("temp")
 LOG_FILE = Path("pipeline.log")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
-ENCODER_PREFER_QUALITY = True
+_key_file = Path("GEMINI_API_KEY.txt")
+if not GEMINI_API_KEY and _key_file.exists():
+    GEMINI_API_KEY = _key_file.read_text(encoding="utf-8").strip()
+ENCODER_PREFER_QUALITY = True  # Quality mode (libx264) enabled by default
+LOSSLESS_ARGS = ["-c:v", "libx264", "-crf", "0", "-preset", "ultrafast"]
+FINAL_ENCODER_FLAGS = []  # will be set in main or job manager
 
-# Viral Subtitle Styles (ASS detailed format)
-SUBTITLE_STYLES = {
-    0: {  # 🔥 Classic Viral
-        "name": "Classic Viral",
-        "fontname": "Arial",
-        "fontsize": 72,
-        "base_color": "&H00FFFFFF",
-        "highlight_color": "&H0000FFFF",
-        "outline_color": "&H00000000",
-        "back_color": "&H00000000",
-        "bold": True,
-        "outline": 6,
-        "shadow": 2,
-        "alignment": 2,  # bottom center
-        "margin_v": 120,  # push up from bottom edge
-    },
-    1: {  # 🟡 TikTok Yellow
-        "name": "TikTok Yellow",
-        "fontname": "Arial",
-        "fontsize": 75,
-        "base_color": "&H0000FFFF",
-        "highlight_color": "&H00FFFFFF",
-        "outline_color": "&H00000000",
-        "back_color": "&H00000000",
-        "bold": True,
-        "outline": 8,
-        "shadow": 0,
-        "alignment": 2,
-        "margin_v": 120,
-    },
-    2: {  # 📖 Storyteller
-        "name": "Storyteller",
-        "fontname": "Arial",
-        "fontsize": 68,
-        "base_color": "&H00FFFFFF",
-        "highlight_color": "&H00FFFF00",
-        "outline_color": "&H00000000",
-        "back_color": "&H00000000",
-        "bold": False,
-        "outline": 4,
-        "shadow": 3,
-        "alignment": 2,  # bottom, not center screen
-        "margin_v": 180,  # higher up for storyteller feel
-    },
-    3: {  # 💎 Neon Cyan
-        "name": "Neon Cyan",
-        "fontname": "Arial",
-        "fontsize": 72,
-        "base_color": "&H00FFFF00",
-        "highlight_color": "&H00FFFFFF",
-        "outline_color": "&H00FF8C00",
-        "back_color": "&H00000000",
-        "bold": True,
-        "outline": 6,
-        "shadow": 0,
-        "alignment": 2,
-        "margin_v": 120,
-    },
-    4: {  # 🚨 Action Red
-        "name": "Action Red",
-        "fontname": "Arial",
-        "fontsize": 75,
-        "base_color": "&H000000FF",
-        "highlight_color": "&H00FFFFFF",
-        "outline_color": "&H00FFFFFF",
-        "back_color": "&H00000000",
-        "bold": True,
-        "outline": 6,
-        "shadow": 0,
-        "alignment": 2,
-        "margin_v": 120,
-    },
-}
+from modules.overlays import STYLE_NAMES, write_ass
 
 # ── Clip padding constants ────────────────────────────────────────────────────
 CLIP_PAD_START = 1.5  # seconds before clip start (breathing room)
@@ -156,7 +95,9 @@ SHARPEN_STRENGTH = 0.8
 SCENE_THRESHOLD = 0.35  # 0.0–1.0, higher = fewer detected scenes
 
 # ── Face Tracking Constants ───────────────────────────────────────────────
-FACE_DETECT_EVERY_N_FRAMES = 15  # detect every 15 frames (~0.5s at 30fps)
+ANALYSIS_WIDTH = 640  # downsample to this width before detection
+FACE_DETECT_EVERY_N_FRAMES = 60  # detect every 60 frames (~2s at 30fps) for speed
+MAX_FACE_TRACK_SAMPLES = 50  # hard cap: never analyze more than 50 frames per clip
 FACE_SMOOTH_WINDOW = 30  # rolling average over 30 detections = smooth pan
 FACE_SCALE_FACTOR = 1.1  # haarcascade detection sensitivity
 FACE_MIN_NEIGH_BORS = 5  # higher = fewer false positives
@@ -167,9 +108,22 @@ FACE_MIN_SIZE_RATIO = 0.05  # minimum face size relative to frame width
 PROMPT_TEMPLATE = """\
 === EDITOR INSTRUCTIONS (HIGHEST PRIORITY) ===
 {custom_instruction}
+
+Expert Short-Form framework (AIDA):
+- ATTENTION: Starts with a shocking stat, bold claim, or open loop ("Most people don't know...")
+- INTEREST: Contains a story, analogy, or surprising contrast
+- DESIRE: Speaker reveals a secret, method, or transformation
+- ACTION: Clear takeaway the viewer can use today
 ================================================
 
-You are a SHORT-FORM VIDEO EDITOR creating clips for TikTok and YouTube Shorts.
+You are an expert SHORT-FORM VIDEO EDITOR for TikTok and YouTube Shorts.
+Your goal is to pick moments with the highest viral potential.
+
+PRIORITY ORDER for scoring:
+1. Contrarian claims that challenge assumptions (score 0.95+)
+2. Personal story with a reveal or turning point (score 0.90+)
+3. Tactical how-to with specific numbers/steps (score 0.85+)
+4. Pure motivation without actionable advice (score 0.60 max)
 
 ⚠️ CRITICAL DIFFERENCE — READ THIS FIRST:
 The transcript below contains many small lines, each 2-5 seconds long.
@@ -208,14 +162,18 @@ RULES:
 1. Each clip MUST be {min_sec}–{max_sec} seconds (end - start >= {min_sec})
 2. Return AT LEAST {min_clips} clips
 3. Combine multiple transcript lines into one scene window
-4. Pick emotionally engaging moments: shocking facts, reveals, arguments, surprises
-5. You MUST provide a "title" for every clip (this will be the subtitle hook)
-6. End every clip at a COMPLETE sentence — the last word must be followed by
-   a period, exclamation mark, or question mark in the transcript.
-   Never end on words like "and", "but", "so", "the", "a", "my", "your".
+4. Reject any clip where:
+   - First 3 seconds has no hook
+   - Speaker is mid-sentence at start
+   - Topic is administrative (intro/outro/announcements)
+5. Title MUST be a viral hook — not a description.
+   BAD:  "Understanding Affiliate Marketing"
+   GOOD: "The Secret They Don't Teach About Affiliate Income"
+   Use curiosity gaps, money amounts, or bold contrarian claims.
+6. End every clip at a COMPLETE sentence.
 7. Add 2-3 seconds of buffer AFTER the final word for natural breathing room.
-   Example: if the last word ends at 287.5s, set end = 290.0s minimum.
 8. Return a JSON object with a "clips" key containing the array
+9. Start every clip at the BEGINNING of a sentence — never mid-thought.
 
 TRANSCRIPT:
 {transcript}
@@ -380,6 +338,103 @@ def safe_filename(value: str, max_len: int = 60) -> str:
     cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", value.strip()).strip("._")
     cleaned = re.sub(r"_+", "_", cleaned)
     return (cleaned or "clip")[:max_len]
+
+
+def load_campaign(campaign_path: str) -> dict[str, Any]:
+    """
+    Load and validate a campaign profile JSON.
+    Returns a dict of campaign settings.
+    Raises PipelineError on missing file or invalid JSON.
+    """
+    path = Path(campaign_path)
+    if not path.exists():
+        raise PipelineError(f"Campaign file not found: {path}")
+
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise PipelineError(f"Invalid JSON in campaign file {path}: {exc}") from exc
+
+    if not isinstance(data, dict):
+        raise PipelineError(f"Campaign file must be a JSON object: {path}")
+
+    # ── Required fields ───────────────────────────────────────────────────
+    required = ["campaign_id", "owner"]
+    for field in required:
+        if not data.get(field):
+            raise PipelineError(f"Campaign file missing required field: '{field}'")
+
+    LOGGER.info(
+        "Campaign loaded: '%s' by %s",
+        data["campaign_id"],
+        data["owner"],
+    )
+    return data
+
+
+def apply_campaign_to_args(
+    args: argparse.Namespace, campaign: dict[str, Any]
+) -> argparse.Namespace:
+    """
+    Merge campaign profile into args.
+    Campaign values are defaults — CLI flags override them.
+    This means: python pipeline.py --min-clips 2 --campaign X
+    will use min_clips=2, not the campaign's value.
+    """
+    # Map campaign keys → args attribute names
+    # Adjusted to match actual pipeline.py attribute destinations
+    field_map = {
+        "min_sec": "min_sec",
+        "max_sec": "max_sec",
+        "min_clips": "min_clips",
+        "clips": "clips",
+        "subtitle_style": "subtitle_style",
+        "custom_instruction": "prompt",
+        "source_url": None,  # handled separately
+        "caption_template": "caption_template",
+        "watermark": "watermark",
+        "cta_text": "cta_text",
+        "platform": "platform",
+    }
+
+    for campaign_key, args_attr in field_map.items():
+        if args_attr is None:
+            continue
+        campaign_value = campaign.get(campaign_key)
+        if campaign_value is None:
+            continue
+
+        # Only apply if the user didn't explicitly set this flag
+        # argparse sets defaults — we only override if value == default
+        current = getattr(args, args_attr, None)
+
+        # Check against known defaults — if still at default, apply campaign value
+        defaults = {
+            "min_sec": 15,  # MIN_CLIP_SEC
+            "max_sec": 90,  # MAX_CLIP_SEC
+            "min_clips": 1,
+            "clips": 5,  # MAX_CLIPS
+            "subtitle_style": 0,
+            "prompt": "",
+            "caption_template": "",
+            "watermark": None,
+            "cta_text": None,
+            "platform": "instagram",
+        }
+
+        if current == defaults.get(args_attr):
+            setattr(args, args_attr, campaign_value)
+            LOGGER.debug(
+                "  Campaign override: %s = %r",
+                args_attr,
+                (
+                    campaign_value
+                    if args_attr != "prompt"
+                    else f"{str(campaign_value)[:60]}..."
+                ),
+            )
+
+    return args
 
 
 def estimate_tokens(text: str) -> int:
@@ -696,7 +751,6 @@ def get_video(source: str, job_id: str = "") -> Path:
         import yt_dlp
 
         ydl_opts: dict[str, Any] = {
-            "remote_components": ["ejs:github"],
             "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best",
             "noplaylist": True,
             "nopart": True,
@@ -705,9 +759,14 @@ def get_video(source: str, job_id: str = "") -> Path:
             "outtmpl": str(output_path),
             "progress_hooks": [_ydl_progress_hook],
             "noprogress": False,
-            "quiet": True,
             "no_warnings": True,
-            "proxy": "",
+            "retries": 15,
+            "fragment_retries": 15,
+            "socket_timeout": 60,
+            "extractor_retries": 10,
+            "file_access_retries": 10,
+            "http_chunk_size": 10485760,  # 10MB chunks
+            "concurrent_fragment_downloads": 5,
         }
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             ydl.download([source])
@@ -1146,19 +1205,28 @@ def call_gemini(
     use_schema: bool = False,
 ) -> str:
     """
-    Call Gemini API with structured JSON output enforcement.
-    Uses response_mime_type + response_schema for schema compliance.
+    Call Gemini API using the modern google-genai SDK.
+    Uses gemini-2.0-flash with structured JSON output when use_schema=True.
     """
-    import google.generativeai as genai
+    try:
+        from google import genai
+        from google.genai import types
+    except ImportError:
+        raise PipelineError(
+            "google-genai is not installed. Run: pip install google-genai"
+        )
 
-    api_key = os.environ.get("GEMINI_API_KEY", "")
+    api_key = GEMINI_API_KEY
     if not api_key:
-        raise PipelineError("GEMINI_API_KEY env variable not set.")
+        raise PipelineError(
+            "GEMINI_API_KEY env variable or GEMINI_API_KEY.txt not set."
+        )
 
-    genai.configure(api_key=api_key)
+    client = genai.Client(api_key=api_key)
 
+    # Build generation config
     if use_schema:
-        generation_config = genai.GenerationConfig(
+        config = types.GenerateContentConfig(
             temperature=0.3,
             response_mime_type="application/json",
             response_schema={
@@ -1182,20 +1250,36 @@ def call_gemini(
                 "required": ["clips"],
             },
         )
+        LOGGER.debug("Gemini: schema mode ON (clips wrapper enforced)")
     else:
-        # Plain text for chapters
-        generation_config = genai.GenerationConfig(temperature=0.3)
+        config = types.GenerateContentConfig(temperature=0.3)
+        LOGGER.debug("Gemini: schema mode OFF (plain text)")
 
-    model_name = "gemini-1.5-flash"
-    model_obj = genai.GenerativeModel(
-        model_name,
-        generation_config=generation_config,
-    )
+    model = "gemini-flash-latest"  # confirmed working alias for this tier
 
     try:
-        response = model_obj.generate_content(prompt)
+        response = client.models.generate_content(
+            model=model,
+            contents=prompt,
+            config=config,
+        )
         return response.text
+
     except Exception as exc:
+        err = str(exc)
+        if "404" in err or "not found" in err.lower():
+            raise PipelineError(
+                f"Gemini model '{model}' not found. "
+                f"Check available models at aistudio.google.com"
+            ) from exc
+        if "429" in err:
+            raise PipelineError(
+                "Gemini rate limit hit. Wait 60s and retry, or use --model qwen2.5:7b"
+            ) from exc
+        if "401" in err or "api_key" in err.lower():
+            raise PipelineError(
+                "Invalid GEMINI_API_KEY. Verify at aistudio.google.com/apikey"
+            ) from exc
         raise PipelineError(f"Gemini API error: {exc}") from exc
 
 
@@ -1390,6 +1474,49 @@ def fix_sentence_boundary(
                         extension,
                         max_extend,
                     )
+            break
+
+    return clip
+
+
+def snap_start_to_sentence_begin(
+    clip: dict,
+    segments: list[dict],
+    max_retract: float = 3.0,
+) -> dict:
+    """
+    If clip starts mid-sentence, retract start to the beginning
+    of that sentence segment. Only retracts up to max_retract seconds.
+    """
+    if not segments:
+        return clip
+
+    start = float(clip.get("start", 0))
+
+    for seg in segments:
+        seg_start = float(seg.get("start", 0))
+        seg_end = float(seg.get("end", 0))
+
+        # Clip starts inside this segment (mid-sentence)
+        if seg_start < start < seg_end:
+            retract = start - seg_start
+            if retract <= max_retract:
+                fixed = dict(clip)
+                fixed["start"] = seg_start
+                LOGGER.info(
+                    "  Start snap: '%.2fs' retracted to '%.2fs' "
+                    "(mid-sentence start fixed, segment: '%.40s...')",
+                    start,
+                    seg_start,
+                    seg.get("text", ""),
+                )
+                return fixed
+            else:
+                LOGGER.debug(
+                    "  Start snap: skipped (retract %.2fs > max %.2fs)",
+                    retract,
+                    max_retract,
+                )
             break
 
     return clip
@@ -1688,89 +1815,22 @@ def seconds_to_ass_time(seconds: float) -> str:
 def generate_ass_subtitles(
     segments: list[dict[str, Any]],
     output_path: Path,
-    style_id: int = 0,
+    style_id: int = 1,
     clip_start: float = 0.0,
-    video_width: int = 1080,
-    video_height: int = 1920,
-) -> Path:
+    clip_end: float = float("inf"),
+    gemini_fn: Any = None,
+) -> int:
     """
-    Generate an ASS subtitle file with karaoke word-by-word highlighting.
-    Segments must contain word-level timestamps from Whisper word_timestamps=True.
-    clip_start offsets all timestamps relative to the clip's start time.
+    Wrapper for modules.overlays.write_ass.
     """
-    style = SUBTITLE_STYLES.get(style_id, SUBTITLE_STYLES[0])
-
-    ass_header = f"""[Script Info]
-ScriptType: v4.00+
-PlayResX: {video_width}
-PlayResY: {video_height}
-ScaledBorderAndShadow: yes
-
-[V4+ Styles]
-Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,{style["fontname"]},{style["fontsize"]},{style["base_color"]},{style["highlight_color"]},{style["outline_color"]},{style["back_color"]},{1 if style["bold"] else 0},0,0,0,100,100,0,0,1,{style["outline"]},{style["shadow"]},{style["alignment"]},10,10,{style["margin_v"]},1
-
-[Events]
-Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
-"""
-
-    events = []
-    for segment in segments:
-        words = segment.get("words", [])
-        if not words:
-            # Fallback — no word timestamps, show full segment text
-            seg_start = max(0.0, float(segment["start"]) - clip_start)
-            seg_end = max(seg_start + 0.1, float(segment["end"]) - clip_start)
-            if seg_end <= 0:
-                continue
-            text = str(segment.get("text", "")).strip()
-            events.append(
-                f"Dialogue: 0,{seconds_to_ass_time(seg_start)},"
-                f"{seconds_to_ass_time(seg_end)},Default,,0,0,0,,"
-                f"{text}"
-            )
-            continue
-
-        # Group words into lines of max 3 words for readability
-        line_size = 3
-        word_groups = [
-            words[i : i + line_size] for i in range(0, len(words), line_size)
-        ]
-
-        for group in word_groups:
-            if not group:
-                continue
-
-            group_start = max(0.0, float(group[0]["start"]) - clip_start)
-            group_end = max(group_start + 0.1, float(group[-1]["end"]) - clip_start)
-
-            if group_end <= 0:
-                continue
-
-            # Build karaoke text with {\k} tags
-            # Each word gets a {\kf<duration>} tag where duration is in centiseconds
-            karaoke_parts = []
-            for word in group:
-                word_start = float(word["start"]) - clip_start
-                word_end = float(word["end"]) - clip_start
-                # Duration in centiseconds
-                dur_cs = max(1, int((word_end - word_start) * 100))
-                word_text = str(word.get("word", "")).strip()
-                karaoke_parts.append(f"{{\\kf{dur_cs}}}{word_text} ")
-
-            karaoke_line = "".join(karaoke_parts).rstrip()
-            events.append(
-                f"Dialogue: 0,{seconds_to_ass_time(group_start)},"
-                f"{seconds_to_ass_time(group_end)},Default,,0,0,0,,"
-                f"{karaoke_line}"
-            )
-
-    ass_content = ass_header + "\n".join(events)
-    output_path.write_text(ass_content, encoding="utf-8")
-    LOGGER.info(
-        "  ASS subtitles written: %s (%d events)", output_path.name, len(events)
+    return write_ass(
+        segments=segments,
+        path=str(output_path),
+        style=style_id,
+        clip_start=clip_start,
+        clip_end=clip_end,
+        gemini_fn=gemini_fn,
     )
-    return output_path
 
 
 def extract_thumbnail(clip_path: Path) -> Path | None:
@@ -1853,15 +1913,25 @@ def detect_face_centers(
         LOGGER.warning("Face tracking: could not open video, using center crop.")
         return []
 
+    vid_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    vid_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
     total_frames = int((end_time - start_time) * fps)
     start_frame = int(start_time * fps)
+
+    # Calculate downsample scale factor
+    scale = min(1.0, ANALYSIS_WIDTH / vid_w)
+    small_w = int(vid_w * scale)
+    small_h = int(vid_h * scale)
+
+    # Calculate sampling step (apply hard cap for speed)
+    step = max(FACE_DETECT_EVERY_N_FRAMES, total_frames // MAX_FACE_TRACK_SAMPLES)
 
     cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
 
     # Rolling buffer of detected center positions
     center_buffer: deque[tuple[float, float]] = deque(maxlen=FACE_SMOOTH_WINDOW)
-    center_buffer.append((0.5, 0.35))  # default: upper-center (typical talking head)
+    center_buffer.append((0.5, 0.35))  # default: upper-center
 
     frame_centers: list[tuple[float, float]] = []
     frame_idx = 0
@@ -1919,6 +1989,72 @@ def detect_face_centers(
         len(frame_centers),
         100 * detected_count / max(1, len(frame_centers)),
     )
+
+
+def detect_speaker_faces(
+    video_path: Path,
+    annotated_segments: list[Any],
+) -> dict[str, tuple[int, int, int, int]]:
+    """
+    For each unique speaker, find a representative face bounding box.
+    Samples 5 frames per speaker and uses the most consistent face.
+    Returns: speaker_id -> (x, y, w, h)
+    """
+    try:
+        from modules.speaker_tracker import AnnotatedSegment
+    except ImportError:
+        return {}
+
+    face_cascade = cv2.CascadeClassifier(
+        cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+    )
+    cap = cv2.VideoCapture(str(video_path))
+    if not cap.isOpened():
+        return {}
+
+    vid_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    vid_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+
+    speaker_samples: dict[str, list[tuple[int, int, int, int]]] = {}
+
+    # Group segments by speaker
+    for seg in annotated_segments:
+        sid = seg.speaker_id
+        if sid not in speaker_samples:
+            speaker_samples[sid] = []
+
+        # Sample middle of the segment
+        mid_time = (seg.start + seg.end) / 2
+        cap.set(cv2.CAP_PROP_POS_FRAMES, int(mid_time * fps))
+        ret, frame = cap.read()
+        if not ret:
+            continue
+
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        faces = face_cascade.detectMultiScale(gray, 1.3, 5)
+        if len(faces) > 0:
+            # Use largest face
+            largest = max(faces, key=lambda f: f[2] * f[3])
+            speaker_samples[sid].append(tuple(int(x) for x in largest))
+
+        if len(speaker_samples[sid]) >= 5:
+            continue
+
+    cap.release()
+
+    # Average the detections per speaker
+    final_positions = {}
+    for sid, detections in speaker_samples.items():
+        if not detections:
+            continue
+        avg_x = int(sum(d[0] for d in detections) / len(detections))
+        avg_y = int(sum(d[1] for d in detections) / len(detections))
+        avg_w = int(sum(d[2] for d in detections) / len(detections))
+        avg_h = int(sum(d[3] for d in detections) / len(detections))
+        final_positions[sid] = (avg_x, avg_y, avg_w, avg_h)
+
+    return final_positions
 
     LOGGER.info(
         "  Face tracking: %d centers detected, avg position (%.2f, %.2f)",
@@ -1990,46 +2126,35 @@ def build_face_crop_filter(
 
 def cut_and_format_clip(
     video_path: Path,
-    clip: dict[str, Any],
-    srt_path: Path,
+    start: float,
+    end: float,
     output_path: Path,
-    encoder_flags: list[str] | None = None,
-    no_scene_snap: bool = False,
-    use_esrgan: bool = False,
-    subtitle_style: int = 0,
     segments: list[dict[str, Any]] | None = None,
     use_face_tracking: bool = True,
-) -> Path:
-    """Cut, crop, subtitle, and encode a vertical short clip with FFmpeg."""
+    clip: dict[str, Any] | None = None,
+    encoder_flags: list[str] | None = None,
+    cta_text: str = "",
+    output_is_vertical: bool = True,
+    subtitle_style: int = 0,
+    no_scene_snap: bool = False,
+    use_esrgan: bool = False,
+    burn_subtitles: bool = True,
+    keep_ass: bool = False,
+    annotated_segments: list[Any] | None = None,
+    tight_cuts: bool = False,
+) -> tuple[Path, Path | None]:
+    """Cut, crop, subtitle, and encode video with FFmpeg. Supports 9:16 and 16:9."""
     video_duration = get_video_duration(video_path)
-
-    raw_start = clip["start"]
-    raw_end = clip["end"]
-
-    # ── Apply padding ─────────────────────────────────────────────────────────
-    start = max(0.0, raw_start - CLIP_PAD_START)
-    end = min(video_duration, raw_end + CLIP_PAD_END)
-
-    # ── Snap end to sentence boundary FIRST (before scene snap) ───────────────
-    if segments:
-        end = snap_to_sentence_end(end, segments, max_extend=4.0)
+    is_vertical = output_is_vertical
+    clip_data = clip or {}
 
     # ── Then snap both to scene cuts ──────────────────────────────────────────
     if not no_scene_snap:
-        start = snap_to_scene_cut(video_path, start, window=1.5)
-        end = snap_to_scene_cut(video_path, end, window=1.5)
-
-    # ── Safety clamp ──────────────────────────────────────────────────────────
-    end = min(video_duration, end)
-    if end <= start:
-        LOGGER.warning(
-            "  cut_and_format_clip: end (%.2fs) <= start (%.2fs) after snapping — "
-            "reverting to padded timestamps",
-            end,
-            start,
-        )
-        start = max(0.0, raw_start - CLIP_PAD_START)
-        end = min(video_duration, raw_end + CLIP_PAD_END)
+        snap_start = snap_to_scene_cut(video_path, start, window=1.5)
+        snap_end = snap_to_scene_cut(video_path, end, window=1.5)
+        # Verify duration after snapping
+        if (snap_end - snap_start) >= 5.0:
+            start, end = snap_start, snap_end
 
     duration = end - start
     ffmpeg_binary = ensure_ffmpeg_on_path()
@@ -2040,7 +2165,6 @@ def cut_and_format_clip(
     # ── Generate ASS subtitle file ─────────────────────────
     ass_path = None
     if segments:
-        # Filter segments that overlap with this clip
         clip_segments = [s for s in segments if s["end"] >= start and s["start"] <= end]
         if clip_segments:
             ass_path = output_path.with_suffix(".ass")
@@ -2057,80 +2181,151 @@ def cut_and_format_clip(
         f"unsharp=3:3:{SHARPEN_STRENGTH}",
     ]
 
-    # 4. Vertical Layout with Face Tracking
+    # 4. Layout & Crop Logic
     source_w, source_h = get_video_dimensions(video_path)
+    smart_filter = ""
+
     if use_face_tracking and source_w > 0:
-        LOGGER.info("  Stage: face tracking crop...")
         face_centers = detect_face_centers(video_path, start, end)
-        crop_filter = build_face_crop_filter(face_centers, source_w, source_h)
-    elif source_w > 0:
-        # Static center crop fallback
-        crop_w = min(source_w, int(source_h * 1080 / 1920))
-        crop_x = (source_w - crop_w) // 2
-        crop_filter = f"crop={crop_w}:{source_h}:{crop_x}:0,scale=1080:1920"
+        try:
+            from modules.scene_crop import detect_clip_mode, build_smart_crop_filter
+
+            clip_mode = detect_clip_mode(video_path, start, end)
+
+            if annotated_segments:
+                try:
+                    from modules.speaker_tracker import build_speaker_crop_filter
+
+                    speaker_faces = detect_speaker_faces(video_path, annotated_segments)
+                    smart_filter = build_speaker_crop_filter(
+                        annotated_segments, speaker_faces, output_w=1080, output_h=1920
+                    )
+                except Exception as exc:
+                    LOGGER.warning(
+                        "Speaker-aware crop failed, falling back to smart crop: %s", exc
+                    )
+                    smart_filter = ""
+
+            if not smart_filter:
+                smart_filter = build_smart_crop_filter(
+                    clip_mode,
+                    face_centers,
+                    source_w,
+                    source_h,
+                    output_width=1080,
+                    output_height=1920,
+                )
+        except Exception as exc:
+            LOGGER.warning("scene_crop failed, using face crop: %s", exc)
+            smart_filter = "__USE_FACE_CROP__"
+
+        if smart_filter == "__USE_FACE_CROP__":
+            crop_filter = build_face_crop_filter(
+                face_centers,
+                source_w,
+                source_h,
+                output_width=1080,
+                output_height=1920,
+            )
+        elif smart_filter == "__PRESERVE_16_9__":
+            crop_filter = "scale=1920:1080"
+            is_vertical = False
+            LOGGER.info(
+                "  Preserving 16:9 frame for high-quality hybrid/board processing"
+            )
+        else:
+            crop_filter = smart_filter
     else:
-        # Emergency fallback if dimensions failed
-        crop_filter = "crop=ih*9/16:ih:(iw-ih*9/16)/2:0,scale=1080:1920"
+        # Static fallback
+        crop_w = min(source_w, int(source_h * 1080 / 1920))
+        crop_filter = f"crop={crop_w}:ih:(iw-{crop_w})/2:0,scale=1080:1920"
 
     video_filters.insert(0, crop_filter)
-    video_filters.extend(
-        [
-            "pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black",
-        ]
-    )
 
-    # 5. Burn ASS Subtitles (with robust Windows escaping)
-    if ass_path and ass_path.exists():
-        # Windows path must be double-escaped for FFmpeg ass filter
+    # Final padding (only if vertical)
+    if is_vertical:
+        video_filters.append("pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black")
+
+    # 5. Burn ASS Subtitles
+    if burn_subtitles and ass_path and ass_path.exists():
         ass_escaped = str(ass_path.resolve()).replace("\\", "\\\\").replace(":", "\\:")
         video_filters.append(f"ass='{ass_escaped}'")
 
     vf = ",".join(video_filters)
     af = f"loudnorm=I={AUDIO_LUFS_TARGET}:TP={AUDIO_TRUE_PEAK}:LRA=11"
 
-    command = [
-        ffmpeg_binary,
-        "-y",
-        "-ss",
-        str(start),
-        "-i",
-        str(video_path),
-        "-t",
-        str(duration),
-        "-vf",
-        vf,
-        "-af",
-        af,
-        *encoder_flags,
-        "-c:a",
-        "aac",
-        "-b:a",
-        "192k",
-        "-ar",
-        "48000",
-        "-movflags",
-        "+faststart",
-        str(output_path),
-    ]
-
-    LOGGER.info(
-        "  Cutting clip '%s' [%.1fs-%.1fs] style=%s",
-        clip.get("title", "untitled"),
-        start,
-        end,
-        SUBTITLE_STYLES.get(subtitle_style, {}).get("name", "Default"),
-    )
-
     try:
-        run_command(command, timeout=3600)
-    except PipelineError as exc:
-        LOGGER.error(
-            "FFmpeg failed for clip '%s': %s", clip.get("title", "untitled"), exc
-        )
-        raise
+        # ── Final Render: Silence Removal (Jump Cuts) vs Standard ─────────
+        try:
+            from modules.silence import remove_silences
+
+            if tight_cuts:
+                output_path, final_chunks = remove_silences(
+                    video_path,
+                    start,
+                    end,
+                    output_path,
+                    encoder_flags,
+                    mode="aggressive",
+                    transcript_segments=segments,
+                    extra_vf=vf,
+                )
+                rendered_with_cuts = len(final_chunks) > 1
+            else:
+                rendered_with_cuts = False
+        except Exception as exc:
+            LOGGER.warning(
+                "  Silence removal failed, falling back to standard render: %s", exc
+            )
+            rendered_with_cuts = False
+
+        if not rendered_with_cuts:
+            # Standard single-pass render if no silences detected or module failed
+            command = [
+                ffmpeg_binary,
+                "-y",
+                "-ss",
+                str(start),
+                "-i",
+                str(video_path),
+                "-t",
+                str(duration),
+                "-vf",
+                vf,
+                "-af",
+                af,
+                *encoder_flags,
+                "-c:a",
+                "aac",
+                "-b:a",
+                "192k",
+                "-ar",
+                "48000",
+                "-movflags",
+                "+faststart",
+                str(output_path),
+            ]
+
+            LOGGER.info(
+                "  Cutting clip '%s' [%.1fs-%.1fs] style=%s",
+                clip.get("title", "untitled"),
+                start,
+                end,
+                STYLE_NAMES.get(subtitle_style, "Default"),
+            )
+
+            try:
+                run_command(command, timeout=3600)
+            except PipelineError as exc:
+                LOGGER.error(
+                    "FFmpeg failed for clip '%s': %s",
+                    clip.get("title", "untitled"),
+                    exc,
+                )
+                raise
     finally:
-        # Clean up .ass file after burning
-        if ass_path and ass_path.exists():
+        # Clean up .ass file after burning, unless requested otherwise
+        if not keep_ass and ass_path and ass_path.exists():
             try:
                 ass_path.unlink()
             except OSError:
@@ -2146,7 +2341,7 @@ def cut_and_format_clip(
     if segments:
         export_srt(segments, start, end, output_path)
 
-    return output_path
+    return output_path, ass_path
 
 
 def upscale_with_esrgan(clip_path: Path) -> Path:
@@ -2303,6 +2498,7 @@ def analyze_chunks(
 
         # 2. Fix mid-sentence cuts BEFORE duration check
         clip = fix_sentence_boundary(clip, segments, video_duration, max_extend=5.0)
+        clip = snap_start_to_sentence_begin(clip, segments, max_retract=3.0)
 
         # 3. Expand clips that are too short
         duration = clip["end"] - clip["start"]
@@ -2370,6 +2566,7 @@ def analyze_chunks(
                     clip = fix_sentence_boundary(
                         clip, segments, video_duration, max_extend=5.0
                     )
+                    clip = snap_start_to_sentence_begin(clip, segments, max_retract=3.0)
 
                     # Try to expand short clips before rejecting them
                     duration = clip["end"] - clip["start"]
@@ -2402,9 +2599,107 @@ def analyze_chunks(
             len(valid_clips),
         )
 
-    # ── Sort by score, cap at max_clips ──────────────────────────────────────
-    valid_clips.sort(key=lambda c: c.get("score", 0), reverse=True)
+    # ── Sort by blended virality score, cap at max_clips ────────────────────
+    try:
+        from modules.virality import score_clips
+
+        valid_clips = score_clips(valid_clips)
+        LOGGER.info("Virality scores applied to %d clips", len(valid_clips))
+    except Exception as exc:
+        LOGGER.warning("Virality scorer skipped: %s", exc)
+        valid_clips.sort(key=lambda c: c.get("score", 0), reverse=True)
     return valid_clips[:max_clips]
+
+
+def export_hook_variants(
+    base_clip: Path,
+    clip_meta: dict[str, Any],
+    transcript: dict[str, Any],
+    args: argparse.Namespace,
+    gemini_fn: Any,
+    subtitle_style: int = 0,
+) -> list[dict[str, Any]]:
+    """
+    Generate 3 hook versions of a rendered base clip.
+    Avoids re-rendering heavy video effects; only burns different subtitle variants.
+    """
+    LOGGER.info("  Generating A/B hook variants for: %s", base_clip.name)
+
+    # 1. Generate hook text variants via Gemini/LLM
+    try:
+        variants = generate_hook_variants(
+            transcript_text=clip_meta.get("text", ""),
+            context=clip_meta.get("title", ""),
+            use_gemini=args.gemini,
+        )
+    except Exception as exc:
+        LOGGER.warning("    Hook generation failed: %s", exc)
+        return []
+
+    results = []
+    ffmpeg_binary = ensure_ffmpeg_on_path()
+
+    # 2. Export each variant
+    for v in variants:
+        v_filename = base_clip.stem.replace("01_", f"01_hook{v.label}_") + ".mp4"
+        v_path = base_clip.parent / v_filename
+        v_ass = v_path.with_suffix(".ass")
+
+        # Build new ASS for this specific hook rewrite
+        # We replace the first segment's text with the new hook
+        segments = transcript.get("segments", [])
+        start, end = float(clip_meta["start"]), float(clip_meta["end"])
+        clip_segments = [s for s in segments if s["end"] >= start and s["start"] <= end]
+
+        if clip_segments:
+            # Swap first segment text with AI hook
+            clip_segments[0] = {**clip_segments[0], "text": v.hook}
+
+            generate_ass_subtitles(
+                segments=clip_segments,
+                output_path=v_ass,
+                style_id=subtitle_style,
+                clip_start=start,
+            )
+
+            # Burn into the ALREADY RENDERED base_clip
+            ass_escaped = str(v_ass.resolve()).replace("\\", "\\\\").replace(":", "\\:")
+            command = [
+                ffmpeg_binary,
+                "-y",
+                "-i",
+                str(base_clip),
+                "-vf",
+                f"ass='{ass_escaped}'",
+                "-c:a",
+                "copy",  # Fast audio copy
+                "-c:v",
+                "libx264",
+                "-crf",
+                "18",
+                "-preset",
+                "veryfast",
+                str(v_path),
+            ]
+
+            try:
+                run_command(command, timeout=300)
+                results.append(
+                    {
+                        "label": v.label,
+                        "hook": v.hook,
+                        "style": v.style,
+                        "reason": v.reason,
+                        "video_name": v_path.name,
+                    }
+                )
+                # Clean up ASS
+                if v_ass.exists():
+                    v_ass.unlink()
+            except Exception as exc:
+                LOGGER.warning("    Failed to render hook %s: %s", v.label, exc)
+
+    return results
 
 
 def rewrite_hooks(
@@ -2508,6 +2803,21 @@ def cleanup_temp_files(paths: list[Path]) -> None:
             LOGGER.warning("Could not remove temp file: %s", path)
 
 
+def save_clip_caption(
+    clip_path: Path, caption_template: str, clip: dict[str, Any]
+) -> None:
+    """Save caption text file alongside the clip for easy copy-paste when posting."""
+    if not caption_template:
+        return
+
+    caption_path = clip_path.with_suffix(".caption.txt")
+    # Replace any template variables
+    caption = caption_template.replace("{title}", clip.get("title", ""))
+    caption = caption.replace("{hook}", clip.get("hook", ""))
+    caption_path.write_text(caption, encoding="utf-8")
+    LOGGER.info("  Caption saved: %s", caption_path.name)
+
+
 def process_clip_batch(
     video_path: Path,
     transcript: dict[str, Any],
@@ -2518,6 +2828,10 @@ def process_clip_batch(
     subtitle_style: int = 0,
     chapters: str = "",
     use_face_tracking: bool = True,
+    caption_template: str = "",
+    cta_text_arg: str = "",
+    args: argparse.Namespace | None = None,
+    annotated_segments: list[Any] | None = None,
 ) -> list[dict[str, Any]]:
     """Render the final MP4 clips and save metadata."""
     results: list[dict[str, Any]] = []
@@ -2548,28 +2862,145 @@ def process_clip_batch(
         srt_path = TEMP_DIR / f"{filename_root}.srt"
         output_path = OUTPUT_DIR / f"{filename_root}.mp4"
         individual_metadata_path = OUTPUT_DIR / f"{filename_root}.json"
+
+        # ── Pre-analysis: Determine if lossless P1 is needed ───────────────
+        start, end = float(clip["start"]), float(clip["end"])
         try:
-            generate_srt(segments, clip["start"], clip["end"], srt_path)
-            output_path = cut_and_format_clip(
+            scene_mode = detect_clip_mode(video_path, start, end)
+            clip["scene_mode"] = scene_mode
+        except Exception:
+            scene_mode = "face"
+
+        has_post_steps = (
+            getattr(args, "music", True)
+            or DEFAULT_LUT_PATH.exists()
+            or scene_mode in ("hybrid", "board")
+        )
+
+        pass_1_encoder = LOSSLESS_ARGS if has_post_steps else encoder_flags
+        # If hybrid/board, Pass 1 should be 16:9 (PRESERVE_16_9)
+        output_is_vertical = scene_mode not in ("hybrid", "board")
+
+        try:
+            generate_srt(segments, start, end, srt_path)
+            cta_text = cta_text_arg or "Follow for more 💰 | Link in bio"
+            if args and not getattr(args, "cta", True):
+                cta_text = ""
+
+            output_path, ass_path = cut_and_format_clip(
                 video_path,
-                clip,
-                srt_path,
+                start,
+                end,
                 output_path,
-                encoder_flags=encoder_flags,
-                no_scene_snap=no_scene_snap,
-                use_esrgan=use_esrgan,
-                subtitle_style=subtitle_style,
                 segments=segments,
+                clip=clip,
+                encoder_flags=pass_1_encoder,
+                cta_text=cta_text,
+                output_is_vertical=output_is_vertical,
+                subtitle_style=subtitle_style,
+                no_scene_snap=no_scene_snap,
                 use_face_tracking=use_face_tracking,
+                use_esrgan=use_esrgan,
+                burn_subtitles=False,  # Don't burn yet
+                keep_ass=True,  # Keep it for hook variants
+                annotated_segments=annotated_segments,
+                tight_cuts=getattr(args, "tight_cuts", False),
             )
+
         except PipelineError:
             LOGGER.warning("Skipping clip after FFmpeg failure: %s", clip["title"])
             continue
 
+        # ── Background music mix (post-render) ───────────────────────────
+        if getattr(args, "music", True):
+            try:
+                music_out = output_path.parent / f"music_{output_path.name}"
+                output_path = apply_music(
+                    output_path,
+                    music_out,
+                    track_name=getattr(args, "music_track", None),
+                )
+            except Exception as exc:
+                LOGGER.warning("  Audio mix skipped: %s", exc)
+
+        # ── Color Grading (LUT) ──────────────────────────────────────────
+        try:
+            # Color grading (LUT)
+            if DEFAULT_LUT_PATH.exists():
+                is_final_lut = scene_mode not in ("hybrid", "board")
+                lut_encoder = encoder_flags if is_final_lut else LOSSLESS_ARGS
+                output_path = apply_lut_to_clip(
+                    output_path,
+                    DEFAULT_LUT_PATH,
+                    output_path,
+                    vcodec_params=lut_encoder,
+                )
+        except Exception as exc:
+            LOGGER.warning("  Color grading failed: %s", exc)
+
+        # ── Hybrid split-screen for board/hybrid mode clips ──────────────
+        if scene_mode in TRIGGER_MODES:
+            try:
+                hybrid_out = output_path.parent / f"hybrid_{output_path.name}"
+                # Try hybrid split first
+                result_path, face_found = apply_hybrid(
+                    output_path, hybrid_out, vcodec_params=encoder_flags
+                )
+
+                if face_found:
+                    output_path = result_path
+                    LOGGER.info("  Split-screen applied → %s", output_path.name)
+                else:
+                    # No face — zoom into board content instead
+                    board_out = output_path.parent / f"board_{output_path.name}"
+                    output_path = apply_board_crop(
+                        output_path, board_out, vcodec_params=encoder_flags
+                    )
+                    LOGGER.info("  Board content zoom applied → %s", output_path.name)
+            except Exception as exc:
+                LOGGER.warning("  Advanced layout processing failed: %s", exc)
+
+        # ── Hook Variants (A/B Testing) ──────────────────────────────────
+        hook_variants = []
+        if ass_path and ass_path.exists():
+            try:
+                # Capture current metadata for variant generation
+                temp_meta = {
+                    "hook": clip.get("hook", ""),
+                    "ass_path": ass_path,
+                }
+
+                # Use Gemini if enabled, else fallback logic handles it in export_hook_variants
+                gemini_fn = (
+                    call_gemini if getattr(args, "gemini", False) else call_ollama
+                )
+
+                hook_variants = export_hook_variants(
+                    base_clip=output_path,
+                    clip_meta=temp_meta,
+                    transcript=clip.get("transcript", ""),
+                    args=args,
+                    gemini_fn=gemini_fn,
+                    subtitle_style=subtitle_style,
+                )
+
+                # Cleanup the original base ASS
+                if ass_path.exists():
+                    ass_path.unlink()
+
+                # If we generated variants, use Hook A as the "main" output_path for metadata
+                if hook_variants:
+                    output_path = Path(hook_variants[0]["file"])
+                    if not output_path.is_absolute():
+                        output_path = ROOT_DIR / output_path
+            except Exception as exc:
+                LOGGER.warning("  Hook variant generation failed: %s", exc)
+
+        # ── Metadata finalization ────────────────────────────────────────
         exported_srt = output_path.with_suffix(".srt")
         record = {
             **clip,
-            "duration": round(float(clip["end"]) - float(clip["start"]), 3),
+            "duration": round(end - start, 3),
             "video_path": str(output_path),
             "video_name": video_path.name,
             "subtitle_path": str(srt_path),
@@ -2579,11 +3010,14 @@ def process_clip_batch(
             "chapters": chapters,
             "generated_at": datetime.now().isoformat(),
             "subtitle_style": subtitle_style,
+            "hook_variants": hook_variants,
+            "active_variant": "A" if hook_variants else None,
         }
         save_json(individual_metadata_path, record)
         new_clip_metadata.append(record)
         results.append(record)
         LOGGER.info("Saved clip: %s", output_path)
+        save_clip_caption(output_path, caption_template, clip)
 
     # ── Merge: existing + new, deduplicate by output_file name ───────────────
     seen_files: set[str] = set()
@@ -2614,7 +3048,12 @@ def process_clip_batch(
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     """Parse CLI arguments for the pipeline."""
     parser = argparse.ArgumentParser(description="ClipForge AI video clipping pipeline")
-    parser.add_argument("source", help="YouTube URL or local video file path")
+    parser.add_argument(
+        "source",
+        nargs="?",
+        default="",
+        help="YouTube URL or local video path (not needed if --queue or --test-styles used)",
+    )
     parser.add_argument("--model", default=OLLAMA_MODEL, help="Ollama model name")
     parser.add_argument(
         "--whisper",
@@ -2624,6 +3063,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--clips", type=int, default=MAX_CLIPS, help="Maximum clips to generate"
+    )
+    parser.add_argument(
+        "--queue",
+        default="",
+        help="Path to a text file containing one URL/path per line for batch processing",
     )
     parser.add_argument(
         "--min-clips",
@@ -2675,9 +3119,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--subtitle-style",
         type=int,
-        default=0,
-        choices=[0, 1, 2, 3, 4],
-        help="Subtitle style: 0=Classic, 1=TikTok Yellow, 2=Storyteller, 3=Neon Cyan, 4=Action Red",
+        default=1,
+        choices=list(range(1, 10)),
+        help="Subtitle style (1-9). Use --test-styles to see all variants.",
     )
     parser.add_argument("--job-id", default="", help=argparse.SUPPRESS)
     parser.add_argument(
@@ -2685,9 +3129,24 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--transcribe-output", default="", help=argparse.SUPPRESS)
     parser.add_argument(
+        "--test-styles",
+        action="store_true",
+        help="Generate a 9-second preview of all 9 subtitle styles",
+    )
+    parser.add_argument(
         "--no-face-tracking",
         action="store_true",
         help="Disable face tracking crop, use static center crop instead.",
+    )
+    parser.add_argument(
+        "--tight-cuts",
+        action="store_true",
+        help="Aggressive silence + filler removal inside clips",
+    )
+    parser.add_argument(
+        "--multi-speaker",
+        action="store_true",
+        help="Enable speaker diarization (requires HF_TOKEN in .env)",
     )
     parser.add_argument(
         "--no-chapters",
@@ -2699,7 +3158,186 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Log full raw LLM responses for debugging JSON parse failures.",
     )
+
+    # ── Campaign profile ──────────────────────────────────────────────────────
+    parser.add_argument(
+        "--campaign",
+        type=str,
+        default=None,
+        metavar="PATH",
+        help="Path to a campaign profile JSON (e.g. campaigns/barnside_live.json). "
+        "Campaign values are defaults — CLI flags override them.",
+    )
+
+    # ── New args exposed by campaign system ──────────────────────────────────
+    parser.add_argument(
+        "--caption-template",
+        type=str,
+        default="",
+        dest="caption_template",
+        metavar="TEXT",
+        help="Caption template for posts. Use \\n for newlines.",
+    )
+    parser.add_argument(
+        "--watermark",
+        type=str,
+        default=None,
+        metavar="PATH",
+        help="Path to watermark image (PNG with transparency).",
+    )
+    parser.add_argument(
+        "--cta-text",
+        type=str,
+        default=None,
+        dest="cta_text",
+        metavar="TEXT",
+        help="Call-to-action text to burn into clip (e.g. 'Link in bio 👆').",
+    )
+    parser.add_argument(
+        "--cta",
+        dest="cta",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Enable/disable CTA overlay (--cta / --no-cta). Default: enabled.",
+    )
+    parser.add_argument(
+        "--platform",
+        type=str,
+        default="instagram",
+        choices=["instagram", "tiktok", "youtube", "all"],
+        help="Target platform — affects aspect ratio defaults. (default: instagram)",
+    )
+    # ── Music Controls ────────────────────────────────────────────────────────
+    parser.add_argument(
+        "--music",
+        dest="music",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Enable/disable background music (--music / --no-music)",
+    )
+    parser.add_argument(
+        "--music-track",
+        dest="music_track",
+        type=str,
+        default=None,
+        metavar="FILENAME",
+        help="Specific .mp3 filename from assets/music/ e.g. majestic_12.mp3",
+    )
+
     return parser.parse_args(argv)
+
+
+def generate_style_preview() -> None:
+    """
+    Option C: Generate a 9-second MP4 showing all 9 styles (1s each).
+    """
+    LOGGER.info("🚀 Generating style preview (9 styles, 9 seconds)...")
+    out_dir = Path("outputs")
+    out_dir.mkdir(exist_ok=True)
+    preview_mp4 = out_dir / "style_preview.mp4"
+
+    # 1. Create 9s dummy segments for overlays.py
+    dummy_segments = []
+    for i in range(1, 10):
+        dummy_segments.append(
+            {
+                "start": float(i - 1),
+                "end": float(i),
+                "text": f"This is Subtitle Style {i}",
+                "words": [
+                    {"word": "This", "start": i - 0.9, "end": i - 0.7},
+                    {"word": "is", "start": i - 0.7, "end": i - 0.5},
+                    {"word": "Style", "start": i - 0.5, "end": i - 0.3},
+                    {"word": f"{i}", "start": i - 0.3, "end": i},
+                ],
+            }
+        )
+
+    # 2. Render each style to its own ASS and then concat via FFmpeg
+    temp_files = []
+    try:
+        ffmpeg_binary = ensure_ffmpeg_on_path()
+        # Create a black 9s base video
+        base_video = out_dir / "base_temp.mp4"
+        run_command(
+            [
+                ffmpeg_binary,
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=c=black:s=1080x1920:d=9:r=30",
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p",
+                str(base_video),
+            ]
+        )
+        temp_files.append(base_video)
+
+        # We'll build one massive filter graph or just 9 separate renders and concat
+        # Separately rendering and concat is safer for different ASS styles
+        style_clips = []
+        for s in range(1, 10):
+            ass_path = out_dir / f"temp_style_{s}.ass"
+            write_ass(dummy_segments, str(ass_path), style=s, clip_start=0, clip_end=9)
+            temp_files.append(ass_path)
+
+            style_mp4 = out_dir / f"temp_style_{s}.mp4"
+            # Trim 1s slice from base, apply ASS
+            ass_escaped = (
+                str(ass_path.resolve()).replace("\\", "\\\\").replace(":", "\\:")
+            )
+            run_command(
+                [
+                    ffmpeg_binary,
+                    "-y",
+                    "-ss",
+                    str(s - 1),
+                    "-t",
+                    "1",
+                    "-i",
+                    str(base_video),
+                    "-vf",
+                    f"ass='{ass_escaped}',drawtext=text='STYLE {s}':fontcolor=white:fontsize=40:x=50:y=50",
+                    "-c:v",
+                    "libx264",
+                    "-crf",
+                    "18",
+                    str(style_mp4),
+                ]
+            )
+            style_clips.append(style_mp4)
+            temp_files.append(style_mp4)
+
+        # Concat the 9 clips
+        with open(out_dir / "concat.txt", "w") as f:
+            for c in style_clips:
+                f.write(f"file '{c.name}'\n")
+        temp_files.append(out_dir / "concat.txt")
+
+        run_command(
+            [
+                ffmpeg_binary,
+                "-y",
+                "-f",
+                "concat",
+                "-safe",
+                "0",
+                "-i",
+                str(out_dir / "concat.txt"),
+                "-c",
+                "copy",
+                str(preview_mp4),
+            ]
+        )
+
+        LOGGER.info("✅ Style preview saved to: %s", preview_mp4)
+    finally:
+        for f in temp_files:
+            if f.exists():
+                f.unlink()
 
 
 def run_pipeline(args: argparse.Namespace) -> list[dict[str, Any]]:
@@ -2719,7 +3357,7 @@ def run_pipeline(args: argparse.Namespace) -> list[dict[str, Any]]:
         transcript = transcribe(video_path, model_name=args.whisper)
         segments = transcript.get("segments", [])
         get_video_duration(video_path)
-        model = args.model
+        model = args.model or OLLAMA_MODEL
 
         LOGGER.info("Transcription returned, saving to disk...")
         try:
@@ -2736,17 +3374,78 @@ def run_pipeline(args: argparse.Namespace) -> list[dict[str, Any]]:
                 )
                 raise PipelineError("Empty transcript — no speech detected in video.")
         except Exception as exc:
+            if isinstance(exc, PipelineError):
+                raise
             LOGGER.error("save_json FAILED: %s", exc)
             raise
+
+        # ── Multi-Speaker Diarization (Sequential GPU use) ──────────────
+        annotated_segments = None
+        if getattr(args, "multi_speaker", False):
+            hf_token = os.getenv("HF_TOKEN")
+            if not hf_token:
+                LOGGER.warning(
+                    "  --multi-speaker set but HF_TOKEN not found in .env — skipping"
+                )
+            else:
+                try:
+                    # Note: Whisper worker process has already exited, so VRAM is free
+                    import torch
+
+                    torch.cuda.empty_cache()
+
+                    from modules.speaker_tracker import diarize
+
+                    hw = detect_hardware()
+                    LOGGER.info("Stage 2c/5: Running speaker diarization...")
+                    annotated_segments = diarize(
+                        video_path=video_path,
+                        transcript_segments=segments,
+                        hf_token=hf_token,
+                        device=hw["whisper_device"],
+                    )
+                except Exception as exc:
+                    LOGGER.warning("  Diarization failed: %s", exc)
+
         temp_files_to_cleanup.append(transcript_path)
 
         LOGGER.info("Stage 2b/5: Generating chapter markers...")
-        if not args.no_chapters:
-            chapters = generate_chapters(
-                segments=segments,
-                model=model,
-                use_gemini=args.model.startswith("gemini"),
+        if not getattr(args, "no_chapters", False):
+            chapter_prompt = (
+                "Analyze these video transcript segments and generate a standard chapter markers list "
+                "(HH:MM:SS Title format). Return ONLY the markers, one per line. Focus on major topic shifts."
             )
+            # Use segments preview to keep context window manageable
+            chapter_input = f"{chapter_prompt}\n\nTranscript:\n" + "\n".join(
+                [f"{s['start']}: {s['text']}" for s in segments[:100]]
+            )
+
+            if getattr(args, "gemini", False):
+                try:
+                    chapters = call_gemini(chapter_input, use_schema=False)
+                    LOGGER.info("  Chapter markers generated via Gemini")
+                except Exception as exc:
+                    LOGGER.warning("  Chapter generation failed (Gemini): %s", exc)
+                    chapters = ""
+            else:
+                # Try to clean up stale Ollama instances before metadata tasks
+                try:
+                    subprocess.run(
+                        ["ollama", "stop", "qwen2.5:7b"], timeout=5, capture_output=True
+                    )
+                    time.sleep(2)
+                except Exception:
+                    pass
+
+                try:
+                    chapters = generate_chapters(
+                        segments=segments,
+                        model=model,
+                        use_gemini=False,
+                    )
+                except Exception as exc:
+                    LOGGER.warning("  Chapter generation failed (Ollama): %s", exc)
+                    chapters = ""
             if chapters:
                 chapters_path = OUTPUT_DIR / f"chapters_{job_id}.txt"
                 chapters_path.write_text(chapters, encoding="utf-8")
@@ -2765,7 +3464,7 @@ def run_pipeline(args: argparse.Namespace) -> list[dict[str, Any]]:
             deduped = analyze_chunks(
                 segments=transcript["segments"],
                 video_duration=video_duration,
-                model=args.model,
+                model=args.model or OLLAMA_MODEL,
                 min_sec=args.min_sec,
                 max_sec=args.max_sec,
                 min_clips=args.min_clips,
@@ -2809,12 +3508,25 @@ def run_pipeline(args: argparse.Namespace) -> list[dict[str, Any]]:
             subtitle_style=args.subtitle_style,
             chapters=chapters,
             use_face_tracking=not getattr(args, "no_face_tracking", False),
+            caption_template=getattr(args, "caption_template", ""),
+            cta_text_arg=args.cta_text or "",
+            args=args,
+            annotated_segments=annotated_segments,
         )
         LOGGER.info("Stage 5/5: Pipeline complete!")
         return {
             "clips": results,
             "chapters": chapters,
         }
+    except PipelineError as exc:
+        LOGGER.error("%s", exc)
+        return []
+    except Exception as exc:
+        LOGGER.error("Unexpected error: %s", exc)
+        import traceback
+
+        LOGGER.error(traceback.format_exc())
+        return []
     finally:
         cleanup_temp_files(temp_files_to_cleanup)
 
@@ -2844,8 +3556,24 @@ def main(argv: list[str] | None = None) -> int:
     global OLLAMA_MODEL, WHISPER_MODEL, MAX_CLIPS, MIN_CLIP_SEC, MAX_CLIP_SEC
     setup_logging()
     args = parse_args(argv)
-    OLLAMA_MODEL = args.model
-    WHISPER_MODEL = args.whisper
+
+    # ── Campaign profile loading ──────────────────────────────────────────
+    if args.campaign:
+        try:
+            campaign = load_campaign(args.campaign)
+            args = apply_campaign_to_args(args, campaign)
+
+            # If campaign has source_url and no positional arg given, use it
+            if not args.source and campaign.get("source_url"):
+                args.source = campaign["source_url"]
+                LOGGER.info("  Using campaign source URL: %s", args.source)
+
+        except PipelineError as exc:
+            LOGGER.error("Campaign loading failed: %s", exc)
+            return 1
+
+    OLLAMA_MODEL = args.model or OLLAMA_MODEL
+    WHISPER_MODEL = args.whisper or WHISPER_MODEL
     MAX_CLIPS = args.clips
     MIN_CLIP_SEC = args.min_sec
     MAX_CLIP_SEC = args.max_sec
@@ -2856,6 +3584,57 @@ def main(argv: list[str] | None = None) -> int:
     if MIN_CLIP_SEC <= 0 or MAX_CLIP_SEC <= 0 or MAX_CLIP_SEC < MIN_CLIP_SEC:
         LOGGER.error("Clip duration settings are invalid. Ensure 0 < min <= max.")
         return 2
+    if args.test_styles:
+        generate_style_preview()
+        return 0
+
+    if args.queue:
+        queue_path = Path(args.queue)
+        if not queue_path.exists():
+            LOGGER.error("Queue file not found: %s", queue_path)
+            return 1
+
+        urls = [
+            line.strip() for line in queue_path.read_text().splitlines() if line.strip()
+        ]
+        LOGGER.info("🚀 Starting queue mode with %d URLs", len(urls))
+
+        # Load existing metadata to skip already processed
+        metadata_path = Path("outputs/clips/clips_metadata.json")
+        existing_sources = set()
+        if metadata_path.exists():
+            try:
+                data = json.loads(metadata_path.read_text(encoding="utf-8"))
+                existing_sources = {
+                    item.get("video_name") for item in data if item.get("video_name")
+                }
+            except Exception:
+                pass
+
+        success_count = 0
+        for i, url in enumerate(urls):
+            LOGGER.info("[%d/%d] Processing: %s", i + 1, len(urls), url)
+
+            # Simple skip check: if URL is a file, check its name. If URL, check its likely filename
+            # This is a heuristic; more robust would be checking URL specifically.
+            source_name = Path(url).name
+            if source_name in existing_sources:
+                LOGGER.info("  Skipping: Already processed (found in metadata)")
+                continue
+
+            try:
+                # Create a fresh args object for each URL to avoid cross-contamination
+                sub_args = argparse.Namespace(**vars(args))
+                sub_args.source = url
+                sub_args.queue = ""  # avoid recursion
+                run_pipeline(sub_args)
+                success_count += 1
+            except Exception as exc:
+                LOGGER.error("  FAILED: %s - %s", url, exc)
+
+        LOGGER.info("Queue complete. %d/%d successful.", success_count, len(urls))
+        return 0
+
     try:
         results = run_pipeline(args)
     except FileNotFoundError as exc:

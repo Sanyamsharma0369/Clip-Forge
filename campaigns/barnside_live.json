@@ -1,0 +1,17 @@
+{
+  "campaign_id": "barnside_001",
+  "owner": "BarnsideLIVE",
+  "source_url": "",
+  "custom_instruction": "Find the most entertaining, funny, or dramatic moments. Each clip must end on a cliffhanger or unresolved moment that makes viewers want to watch more. Never clip a fully resolved moment. Prioritize moments that make viewers curious about what happens next.",
+  "min_sec": 30,
+  "max_sec": 60,
+  "min_clips": 5,
+  "max_clips": 8,
+  "clips": 8,
+  "subtitle_style": 0,
+  "aspect_ratio": "9:16",
+  "caption_template": "You won't believe what happened 😳\n\nWatch it LIVE 👉 barnsidelive.com/next-live-stream\n\n#BarnsideLIVE #LiveEntertainment #Funny #MustWatch #Viral",
+  "platform": "instagram",
+  "watermark": null,
+  "cta_text": null
+}

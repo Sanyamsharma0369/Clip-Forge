@@ -1,0 +1,18 @@
+<?xml version="1.0" ?>
+<look>
+	<shaders>
+	<shader>
+		<name>"LUT"</name>
+		<customname>"LUT"</customname>
+		<visible>"1"</visible>
+		<lockedvisible>"0"</lockedvisible>
+		<opacity>"1"</opacity>
+		<mask>"0"</mask>
+		<vectormask>"0"</vectormask>
+		<linked>"0"</linked>
+		<parameters>
+			<LUT>"IWLTBAP Sedona - LOG.cube"</LUT>
+		</parameters>
+	</shader>
+	</shaders>
+</look>

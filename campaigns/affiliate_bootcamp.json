@@ -1,0 +1,17 @@
+{
+  "campaign_id": "affiliate_bootcamp",
+  "owner": "Russell Brunson",
+  "source_url": "",
+  "custom_instruction": "Extract the most actionable and persuasive moments where Russell explains the essence of affiliate marketing. Focus on 'aha!' moments and high-energy explanations suitable for Whop ads.",
+  "min_sec": 30,
+  "max_sec": 60,
+  "min_clips": 5,
+  "max_clips": 8,
+  "clips": 8,
+  "subtitle_style": 0,
+  "aspect_ratio": "9:16",
+  "caption_template": "What is Affiliate Marketing? 🚀\n\nWatch full lesson at wholesome.com/bootcamp\n\n#AffiliateBootcamp #RussellBrunson #MarketingTips #SideHustle",
+  "platform": "whop",
+  "watermark": null,
+  "cta_text": "Join the Bootcamp 👆"
+}
