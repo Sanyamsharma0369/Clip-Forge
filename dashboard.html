@@ -1168,11 +1168,16 @@
             <div class="field-group" style="margin-top: 12px; margin-bottom: 2px;">
               <div class="panel-label" style="margin-bottom: 8px;">SUBTITLE STYLE</div>
               <div class="sub-style-row" style="display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 8px;">
-                <button class="sub-style-btn active" type="button" data-style="0" title="Classic Viral">🔥</button>
-                <button class="sub-style-btn" type="button" data-style="1" title="TikTok Yellow">🟡</button>
-                <button class="sub-style-btn" type="button" data-style="2" title="Storyteller">📖</button>
-                <button class="sub-style-btn" type="button" data-style="3" title="Neon Cyan">💎</button>
-                <button class="sub-style-btn" type="button" data-style="4" title="Action Red">🚨</button>
+                 <button class="sub-style-btn active" type="button" data-style="0" title="Classic Viral">🔥</button>
+                 <button class="sub-style-btn" type="button" data-style="1" title="TikTok Yellow">🟡</button>
+                 <button class="sub-style-btn" type="button" data-style="2" title="Storyteller">📖</button>
+                 <button class="sub-style-btn" type="button" data-style="3" title="Neon Cyan">💎</button>
+                 <button class="sub-style-btn" type="button" data-style="4" title="Action Red">🚨</button>
+                 <button class="sub-style-btn" type="button" data-style="5" title="Word-by-Word Pop">🎈</button>
+                 <button class="sub-style-btn" type="button" data-style="6" title="Gradient Wave">🌊</button>
+                 <button class="sub-style-btn" type="button" data-style="7" title="Outlined Clean">⚪</button>
+                 <button class="sub-style-btn" type="button" data-style="8" title="Glow Highlight">✨</button>
+                 <button class="sub-style-btn" type="button" data-style="9" title="Impact Mono">📟</button>
               </div>
               <div id="sub-style-label" style="font-size:11px; opacity:0.5; margin-bottom:12px;">
                 🔥 Classic Viral — Bold white text, thick black outline
@@ -1511,6 +1516,7 @@
       const faceTracking = $("faceTrackingToggle").checked;
       const music = $("musicEnabled").checked;
       const track = $("musicTrack").value;
+      const multiSpeaker = $("multiSpeaker").checked;
       const subStyle = window.selectedSubStyle || 0;
 
       const parts = [
@@ -1530,6 +1536,7 @@
       if (!faceTracking) parts.push("--no-face-tracking");
       if (!music) parts.push("--no-music");
       else if (track) parts.push(`--music-track "${track}"`);
+      if (multiSpeaker) parts.push("--multi-speaker");
       parts.push(`--subtitle-style ${subStyle}`);
 
       $("commandBox").textContent = parts.join(" ");
@@ -1546,6 +1553,7 @@
         noSceneSnap,
         faceTracking,
         subStyle,
+        multiSpeaker,
         music_enabled: music,
         music_track: track
       }));
@@ -1593,18 +1601,24 @@
       $("upscaleToggle").checked = Boolean(values.upscale);
       $("fastModeToggle").checked = Boolean(values.noSceneSnap);
       $("faceTrackingToggle").checked = values.faceTracking !== undefined ? Boolean(values.faceTracking) : true;
+      $("multiSpeaker").checked = Boolean(values.multiSpeaker);
 
       window.selectedSubStyle = values.subStyle || 0;
       document.querySelectorAll('.sub-style-btn').forEach(btn => {
         btn.classList.toggle('active', parseInt(btn.dataset.style) === window.selectedSubStyle);
       });
       if ($("sub-style-label")) {
-         const styleLabels = {
+          const styleLabels = {
             0: "🔥 Classic Viral — Bold white text, thick black outline",
             1: "🟡 TikTok Yellow — Bright yellow, high-visibility",
             2: "📖 Storyteller — Large centered text, cinematic",
             3: "💎 Neon Cyan — Glowing cyan, tech/gaming aesthetic",
-            4: "🚨 Action Red — Intense red, urgent/controversial"
+            4: "🚨 Action Red — Intense red, urgent/controversial",
+            5: "🎈 Word-by-Word Pop — Scale punch per word, MrBeast style",
+            6: "🌊 Gradient Wave — Yellow to white color sweep per line",
+            7: "⚪ Outlined Clean — White fill, fat black border, no glow",
+            8: "✨ Glow Highlight — Subtle outer glow, premium feel",
+            9: "📟 Impact Mono — Monospaced type, typewriter vibe"
           };
           $("sub-style-label").textContent = styleLabels[window.selectedSubStyle];
       }
