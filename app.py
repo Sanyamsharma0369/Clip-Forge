@@ -7,6 +7,11 @@ import re
 import shutil
 import subprocess
 import sys
+from dotenv import load_dotenv
+import psutil
+
+load_dotenv()  # Load keys from .env
+
 import threading
 import time
 import uuid
@@ -757,7 +762,39 @@ class JobManager:
                 target=self._watch_process, args=(self._process, job_id), daemon=True
             ).start()
 
-        return True, "ClipForge run started."
+        return True, "ClipForge run started.", self._process.pid if self._process else None
+
+    def stop_job(self, pid: int | None = None) -> dict[str, Any]:
+        """Forcefully terminate the active pipeline process and its children."""
+        with self._lock:
+            target_pid = pid or (self._process.pid if self._process else None)
+            if not target_pid:
+                return {"status": "error", "message": "No active process to stop"}
+
+            killed_pids = []
+            try:
+                parent = psutil.Process(target_pid)
+                for child in parent.children(recursive=True):
+                    try:
+                        child.kill()
+                        killed_pids.append(child.pid)
+                    except psutil.NoSuchProcess:
+                        continue
+                parent.kill()
+                killed_pids.append(target_pid)
+            except psutil.NoSuchProcess:
+                pass
+            except Exception as e:
+                return {"status": "error", "message": str(e)}
+
+            if self._job:
+                self._job["status"] = "failed"
+                self._job["stage"] = "Stopped by User"
+                self._job["finished_at"] = now_iso()
+                self._persist_history()
+
+            self._process = None
+            return {"status": "stopped", "killed_pids": killed_pids}
 
     def _watch_process(self, process: subprocess.Popen[str], job_id: str) -> None:
         """Capture live logs, filter noise, and finalize job state."""
@@ -863,6 +900,7 @@ class JobManager:
             snapshot["active"] = snapshot["status"] == "running"
             snapshot["history"] = self._history
             snapshot["queue_length"] = len(self._queue)
+            snapshot["pid"] = self._process.pid if self._process else None
             return snapshot
 
     def start_ollama(self) -> tuple[bool, str]:
@@ -1083,17 +1121,27 @@ def api_run():
         if not src.strip():
             continue
         # Graft logic: start_job handles its own threading/queue internally
-        ok, msg = JOB_MANAGER.start_job({**payload, "source": src.strip()})
-        results.append({"source": src, "ok": ok, "message": msg})
+        ok, msg, pid = JOB_MANAGER.start_job({**payload, "source": src.strip()})
+        results.append({"source": src, "ok": ok, "message": msg, "pid": pid})
 
     return jsonify(
         {
             "ok": True,
             "queued": sum(1 for r in results if r["ok"]),
             "results": results,
+            "pid": results[0].get("pid") if results else None,
             "job": JOB_MANAGER.snapshot(),
         }
     )
+
+
+@app.route("/api/stop", methods=["POST"])
+def api_stop():
+    """Kill the active pipeline process."""
+    data = request.get_json(force=True) or {}
+    pid = data.get("pid")
+    result = JOB_MANAGER.stop_job(pid=int(pid) if pid else None)
+    return jsonify(result)
 
 
 @app.route("/api/ollama/start", methods=["POST"])

@@ -414,6 +414,14 @@
       color: var(--accent-2);
       border: 1px solid rgba(15, 111, 116, 0.16);
     }
+    
+    .danger {
+      background: var(--danger);
+      color: #fff;
+      box-shadow: 0 8px 20px rgba(162, 52, 45, 0.3);
+    }
+    
+    .hidden { display: none !important; }
 
     .ghost,
     .preset {
@@ -1050,6 +1058,7 @@
         </p>
         <div class="button-row">
           <button class="primary" id="runTopButton" type="button">Launch ClipForge Run</button>
+          <button class="danger hidden" id="stopTopButton" type="button">Stop Run</button>
           <button class="secondary" id="startOllamaTop" type="button">Start Ollama</button>
           <button class="ghost" id="openOutputsTop" type="button">Open Outputs Folder</button>
         </div>
@@ -1260,6 +1269,7 @@
 
             <div class="button-row">
               <button class="primary" id="runButton" type="button">Run This Video</button>
+              <button class="danger hidden" id="stopButton" type="button">Stop Run</button>
               <button class="secondary" id="refreshButton" type="button">Refresh Dashboard</button>
               <button class="ghost" id="openLogButton" type="button">Open Log File</button>
             </div>
@@ -1840,6 +1850,19 @@
       const running = Boolean(job.active);
       $("runButton").disabled = running;
       $("runTopButton").disabled = running;
+      
+      if (running) {
+        $("runButton").classList.add("hidden");
+        $("runTopButton").classList.add("hidden");
+        $("stopButton").classList.remove("hidden");
+        $("stopTopButton").classList.remove("hidden");
+        if (job.pid) window.currentRunPID = job.pid;
+      } else {
+        $("runButton").classList.remove("hidden");
+        $("runTopButton").classList.remove("hidden");
+        $("stopButton").classList.add("hidden");
+        $("stopTopButton").classList.add("hidden");
+      }
     }
 
     function renderClips(clips) {
@@ -2340,10 +2363,23 @@
           showToast(`✅ Queued ${response.queued} videos for processing.`);
         } else {
           showToast(response.message || "ClipForge run started.");
+          if (response.pid) window.currentRunPID = response.pid;
         }
         await refreshDashboard();
       } catch (error) {
         showToast(error.message);
+      }
+    }
+
+    async function stopJob() {
+      if (!confirm("Are you sure you want to stop the current run? This will kill all background processes (FFmpeg, Whisper, etc.).")) return;
+      try {
+        const payload = { pid: window.currentRunPID };
+        const response = await postJson("/api/stop", payload);
+        showToast(response.status === "stopped" ? "⏹ Run stopped by user." : "Could not stop run.");
+        await refreshDashboard();
+      } catch (error) {
+        showToast("Error stopping job: " + error.message);
       }
     }
 
@@ -2491,6 +2527,8 @@
 
       $("runButton").addEventListener("click", runJob);
       $("runTopButton").addEventListener("click", runJob);
+      $("stopButton").addEventListener("click", stopJob);
+      $("stopTopButton").addEventListener("click", stopJob);
       $("refreshButton").addEventListener("click", refreshDashboard);
       $("startOllamaButton").addEventListener("click", startOllama);
       $("startOllamaTop").addEventListener("click", startOllama);
