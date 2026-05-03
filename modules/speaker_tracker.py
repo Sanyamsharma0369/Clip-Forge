@@ -76,11 +76,31 @@ def diarize(audio_path: str, hf_token: str, num_speakers: Optional[int] = None) 
     pipeline.to(torch.device(device))
     log.info("Diarization running on: %s", device.upper())
 
+    # Robust mono extraction for pyannote (ensures 16kHz mono)
+    import subprocess
+    mono_path = audio_path.replace(".wav", "_diar_mono.wav")
+    try:
+        log.info("  Standardizing audio for diarization (16kHz mono)...")
+        subprocess.run([
+            "ffmpeg", "-y", "-i", audio_path,
+            "-ac", "1", "-ar", "16000", "-sample_fmt", "s16",
+            mono_path
+        ], capture_output=True, check=True)
+        active_audio = mono_path
+    except Exception as e:
+        log.warning("  FFmpeg standardization failed, falling back to raw: %s", e)
+        active_audio = audio_path
+
     kwargs = {}
     if num_speakers:
         kwargs["num_speakers"] = num_speakers
 
-    diarization = pipeline(audio_path, **kwargs)
+    diarization = pipeline(active_audio, **kwargs)
+
+    # Cleanup temp mono file
+    if active_audio == mono_path and os.path.exists(mono_path):
+        try: os.remove(mono_path)
+        except: pass
 
     segments: list[SpeakerSegment] = []
     for turn, _, speaker in diarization.itertracks(yield_label=True):
