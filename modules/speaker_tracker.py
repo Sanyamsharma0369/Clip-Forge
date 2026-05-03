@@ -62,12 +62,12 @@ def diarize(audio_path: str, hf_token: str, num_speakers: Optional[int] = None) 
             "pip install pyannote.audio --upgrade"
         )
 
-    log.info("Loading pyannote/speaker-diarization-3.1...")
+    log.info("Loading pyannote/speaker-diarization-community-1...")
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         pipeline = Pipeline.from_pretrained(
-            "pyannote/speaker-diarization-3.1",
+            "pyannote/speaker-diarization-community-1",
             token=hf_token,
         )
 
